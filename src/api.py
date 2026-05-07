@@ -2,9 +2,13 @@ import os
 import time
 import traceback
 import base64
+import tempfile
+import subprocess
 import httpx
+import cv2
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 from PIL import Image
 import io
 import logging
@@ -17,16 +21,14 @@ app = FastAPI(title="CV Video Analytics API")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 PROMPT = "List all objects visible in this image, one line, comma separated. Only the list, no explanations."
 
+
 @app.get("/")
 def root():
     return {"status": "ok", "api_key_loaded": bool(OPENROUTER_API_KEY)}
 
-@app.post("/describe")
-async def describe(file: UploadFile = File(...)):
-    if not OPENROUTER_API_KEY:
-        raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY не задан")
-    contents = await file.read()
-    img = Image.open(io.BytesIO(contents)).convert("RGB")
+
+async def _describe_image_bytes(img_bytes: bytes) -> str:
+    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
     buf = io.BytesIO()
     img.save(buf, format="JPEG")
     b64 = base64.b64encode(buf.getvalue()).decode()
@@ -45,11 +47,75 @@ async def describe(file: UploadFile = File(...)):
                     }
                 )
             resp.raise_for_status()
-            text = resp.json()["choices"][0]["message"]["content"].strip()
-            return JSONResponse({"objects": text, "filename": file.filename})
+            return resp.json()["choices"][0]["message"]["content"].strip()
         except Exception as e:
             logger.error(f"Attempt {attempt+1} failed: {traceback.format_exc()}")
             if attempt < 2:
                 time.sleep(10)
             else:
-                raise HTTPException(status_code=500, detail=str(e))
+                raise
+
+
+@app.post("/describe")
+async def describe(file: UploadFile = File(...)):
+    if not OPENROUTER_API_KEY:
+        raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY не задан")
+    contents = await file.read()
+    try:
+        text = await _describe_image_bytes(contents)
+        return JSONResponse({"objects": text, "filename": file.filename})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class VideoRequest(BaseModel):
+    url: str
+    interval_sec: int = 5
+
+
+@app.post("/describe-video")
+async def describe_video(req: VideoRequest):
+    if not OPENROUTER_API_KEY:
+        raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY не задан")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        video_path = os.path.join(tmpdir, "video.mp4")
+
+        # download video via yt-dlp (handles YouTube, direct links, etc.)
+        try:
+            result = subprocess.run(
+                ["yt-dlp", "-f", "mp4/best[ext=mp4]/best", "-o", video_path, req.url],
+                capture_output=True, text=True, timeout=120
+            )
+            if result.returncode != 0:
+                raise RuntimeError(result.stderr)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Не удалось скачать видео: {e}")
+
+        # extract frames every interval_sec seconds
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            raise HTTPException(status_code=500, detail="Не удалось открыть видео")
+
+        fps = cap.get(cv2.CAP_PROP_FPS) or 25
+        frame_interval = int(fps * req.interval_sec)
+        results = []
+        frame_idx = 0
+
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            if frame_idx % frame_interval == 0:
+                timestamp_sec = int(frame_idx / fps)
+                _, buf = cv2.imencode(".jpg", frame)
+                try:
+                    objects = await _describe_image_bytes(buf.tobytes())
+                    results.append({"time_sec": timestamp_sec, "objects": objects})
+                except Exception as e:
+                    results.append({"time_sec": timestamp_sec, "error": str(e)})
+            frame_idx += 1
+
+        cap.release()
+
+    return JSONResponse({"url": req.url, "frames_analyzed": len(results), "results": results})
