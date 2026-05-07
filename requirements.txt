@@ -1,0 +1,38 @@
+# Core CV
+opencv-python>=4.8.0
+numpy>=1.24.0
+Pillow>=10.0.0
+matplotlib>=3.7.0
+
+# OCR
+easyocr>=1.7.0
+
+# Video processing
+moviepy>=1.0.3
+yt-dlp>=2024.1.0
+
+# Audio / Speech
+openai-whisper>=20231117
+ffmpeg-python>=0.2.0
+
+# Object Detection
+ultralytics>=8.0.0  # YOLO v8
+
+# Classification
+torch>=2.0.0
+torchvision>=0.15.0
+
+# LLM APIs
+openai>=1.0.0       # совместим с Qwen / OpenAI-compatible
+google-generativeai>=0.5.0  # Gemini
+
+# Data & Output
+pandas>=2.0.0
+scipy>=1.10.0
+tqdm>=4.65.0
+ipython>=8.0.0
+
+# API / Deploy (ПЗ 7)
+fastapi>=0.110.0
+uvicorn>=0.27.0
+python-multipart>=0.0.9

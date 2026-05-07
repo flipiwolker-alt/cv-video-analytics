@@ -1,0 +1,16 @@
+version: "3.9"
+
+services:
+  cv-api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../outputs:/app/outputs
+      - ../data:/app/data
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - QWEN_API_KEY=${QWEN_API_KEY}
+    restart: unless-stopped
