@@ -51,7 +51,8 @@ async def _describe_image_bytes(img_bytes: bytes) -> str:
         except Exception as e:
             logger.error(f"Attempt {attempt+1} failed: {traceback.format_exc()}")
             if attempt < 2:
-                time.sleep(10)
+                wait = 60 if "429" in str(e) else 10
+                time.sleep(wait)
             else:
                 raise
 
