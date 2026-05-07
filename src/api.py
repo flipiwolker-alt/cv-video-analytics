@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="CV Video Analytics API")
 
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
-PROMPT = "Перечисли объекты на фото одной строкой через запятую. Только список, без пояснений."
+PROMPT = "List all objects visible in this image, one line, comma separated. Only the list, no explanations."
 
 @app.get("/")
 def root():
@@ -37,7 +37,7 @@ async def describe(file: UploadFile = File(...)):
                     "https://openrouter.ai/api/v1/chat/completions",
                     headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}"},
                     json={
-                        "model": "google/gemini-2.0-flash-exp:free",
+                        "model": "nvidia/nemotron-nano-12b-v2-vl:free",
                         "messages": [{"role": "user", "content": [
                             {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
                             {"type": "text", "text": PROMPT}
