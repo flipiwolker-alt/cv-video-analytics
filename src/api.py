@@ -1,30 +1,55 @@
 import os
-import google.generativeai as genai
+import time
+import traceback
+import base64
+import httpx
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
 from PIL import Image
 import io
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="CV Video Analytics API")
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel("gemini-2.0-flash-lite")
-else:
-    model = None
-
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 PROMPT = "Перечисли объекты на фото одной строкой через запятую. Только список, без пояснений."
 
 @app.get("/")
 def root():
-    return {"status": "ok", "gemini_key_loaded": bool(GEMINI_API_KEY)}
+    return {"status": "ok", "api_key_loaded": bool(OPENROUTER_API_KEY)}
 
 @app.post("/describe")
 async def describe(file: UploadFile = File(...)):
-    if model is None:
-        raise HTTPException(status_code=500, detail="GEMINI_API_KEY не задан")
+    if not OPENROUTER_API_KEY:
+        raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY не задан")
     contents = await file.read()
     img = Image.open(io.BytesIO(contents)).convert("RGB")
-    resp = model.generate_content([img, PROMPT])
-    return JSONResponse({"objects": resp.text.strip(), "filename": file.filename})
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG")
+    b64 = base64.b64encode(buf.getvalue()).decode()
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                resp = await client.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}"},
+                    json={
+                        "model": "google/gemini-2.0-flash-exp:free",
+                        "messages": [{"role": "user", "content": [
+                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                            {"type": "text", "text": PROMPT}
+                        ]}]
+                    }
+                )
+            resp.raise_for_status()
+            text = resp.json()["choices"][0]["message"]["content"].strip()
+            return JSONResponse({"objects": text, "filename": file.filename})
+        except Exception as e:
+            logger.error(f"Attempt {attempt+1} failed: {traceback.format_exc()}")
+            if attempt < 2:
+                time.sleep(10)
+            else:
+                raise HTTPException(status_code=500, detail=str(e))
