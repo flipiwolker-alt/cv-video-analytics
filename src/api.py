@@ -57,10 +57,13 @@ async def _describe_image_bytes(img_bytes: bytes) -> str:
                 raise
 
 
+MOCK_OBJECTS = "mock: object1, object2, object3"
+
+
 @app.post("/describe")
 async def describe(file: UploadFile = File(...)):
     if not OPENROUTER_API_KEY:
-        raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY не задан")
+        return JSONResponse({"objects": MOCK_OBJECTS, "filename": file.filename, "mock": True})
     contents = await file.read()
     try:
         text = await _describe_image_bytes(contents)
@@ -76,8 +79,7 @@ class VideoRequest(BaseModel):
 
 @app.post("/describe-video")
 async def describe_video(req: VideoRequest):
-    if not OPENROUTER_API_KEY:
-        raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY не задан")
+    mock_mode = not OPENROUTER_API_KEY
 
     with tempfile.TemporaryDirectory() as tmpdir:
         video_path = os.path.join(tmpdir, "video.mp4")
@@ -110,11 +112,14 @@ async def describe_video(req: VideoRequest):
             if frame_idx % frame_interval == 0:
                 timestamp_sec = int(frame_idx / fps)
                 _, buf = cv2.imencode(".jpg", frame)
-                try:
-                    objects = await _describe_image_bytes(buf.tobytes())
-                    results.append({"time_sec": timestamp_sec, "objects": objects})
-                except Exception as e:
-                    results.append({"time_sec": timestamp_sec, "error": str(e)})
+                if mock_mode:
+                    results.append({"time_sec": timestamp_sec, "objects": MOCK_OBJECTS, "mock": True})
+                else:
+                    try:
+                        objects = await _describe_image_bytes(buf.tobytes())
+                        results.append({"time_sec": timestamp_sec, "objects": objects})
+                    except Exception as e:
+                        results.append({"time_sec": timestamp_sec, "error": str(e)})
             frame_idx += 1
 
         cap.release()
