@@ -1,6 +1,56 @@
+import os
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
+
+# ── Папка для хранения всех моделей ──────────────────────────────────────────
+# Приоритет: 1) переменная окружения CV_MODELS_DIR
+#             2) E:\cv_models  (создайте вручную в Проводнике если нет)
+#             3) C:\Users\User\cv_models  (запасной вариант)
+
+def _can_write(p: Path) -> bool:
+    """Проверяет реальную возможность записи: пытается создать тестовую подпапку."""
+    test = p / ".write_test"
+    try:
+        test.mkdir(parents=True, exist_ok=True)
+        test.rmdir()
+        return True
+    except (PermissionError, OSError):
+        return False
+
+
+def _resolve_models_dir() -> Path:
+    candidates = []
+    if "CV_MODELS_DIR" in os.environ:
+        candidates.append(Path(os.environ["CV_MODELS_DIR"]))
+    candidates += [Path(r"E:\cv_models"), Path(r"C:\Users\User\cv_models")]
+
+    for p in candidates:
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+        except (PermissionError, OSError):
+            pass
+        if p.exists() and _can_write(p):
+            return p
+
+    raise RuntimeError("Не удалось найти папку для моделей с правами записи.")
+
+
+MODELS_DIR = _resolve_models_dir()
+
+# Выставляем кэш-переменные ДО импорта любых ML-библиотек
+os.environ["HF_HOME"]               = str(MODELS_DIR / "huggingface")
+os.environ["HUGGINGFACE_HUB_CACHE"] = str(MODELS_DIR / "huggingface" / "hub")
+os.environ["TRANSFORMERS_CACHE"]    = str(MODELS_DIR / "huggingface" / "hub")
+os.environ["YOLO_CONFIG_DIR"]       = str(MODELS_DIR / "ultralytics")
+os.environ["EASYOCR_MODULE_PATH"]   = str(MODELS_DIR / "easyocr")
+
+# Создаём подпапки — ошибки игнорируем, библиотеки сами создадут при необходимости
+for _sub in ["huggingface/hub", "ultralytics", "easyocr", "whisper"]:
+    try:
+        (MODELS_DIR / _sub).mkdir(parents=True, exist_ok=True)
+    except (PermissionError, OSError):
+        pass
 
 FRAMES_DIR          = ROOT / "outputs" / "frames"
 OCR_RESULTS_DIR     = ROOT / "outputs" / "ocr_results"

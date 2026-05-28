@@ -1,6 +1,200 @@
 # CV Video Analytics
 
-Учебный проект по компьютерному зрению и анализу видео. Состоит из 8 практических заданий и итоговой курсовой работы. Ноутбуки выполняются в Google Colab, FastAPI-сервер развёрнут в Docker на облачной ВМ Timeweb.
+Учебный проект по компьютерному зрению и анализу видео. Состоит из 8 практических заданий (ноутбуки, Google Colab) и **итогового Gradio-приложения** с полноценным API для детектирования нежелательного контента в YouTube-видео.
+
+---
+
+## Итоговое приложение — Gradio UI + REST API
+
+### Что умеет
+
+- Принимает ссылку на YouTube-видео
+- Запускает **параллельный анализ** четырьмя нейросетями:
+  - 🎤 **Whisper** — распознавание речи + keyword-классификация
+  - 📦 **YOLOv8n** — детекция объектов (бутылки, сигареты и др.)
+  - 🧠 **CLIP ViT-B/32** — zero-shot анализ контекста сцены
+  - 📝 **EasyOCR** — распознавание текста в кадре (опционально)
+- Обнаруживает **9 категорий нарушений**: алкоголь, наркотики, курение, экстремизм, ЛГБТ-пропаганда, насилие, вандализм, азартные игры, нецензурная лексика
+- Показывает таймлайн событий, карточки с confidence, галерею кадров и вырезки клипов
+- Возвращает структурированный **JSON-отчёт**
+
+---
+
+## Быстрый старт
+
+### Требования
+
+| | Windows | macOS | Linux |
+|---|---|---|---|
+| Python | 3.10 – 3.12 | 3.10 – 3.12 | 3.10 – 3.12 |
+| ffmpeg | встроен в пакет | встроен в пакет | встроен в пакет |
+| RAM | ≥ 6 GB | ≥ 6 GB | ≥ 6 GB |
+| Диск | ≥ 3 GB (модели) | ≥ 3 GB (модели) | ≥ 3 GB (модели) |
+
+> **ffmpeg не нужно устанавливать вручную** — `imageio-ffmpeg` поставляет бинарник автоматически.
+
+---
+
+### Установка (Windows / macOS / Linux — одинаково)
+
+```bash
+# 1. Клонировать репозиторий
+git clone https://github.com/flipiwolker-alt/cv-video-analytics.git
+cd cv-video-analytics
+
+# 2. Создать виртуальное окружение
+python3 -m venv .venv
+
+# 3. Активировать окружение
+#    Windows:
+.venv\Scripts\activate
+#    macOS / Linux:
+source .venv/bin/activate
+
+# 4. Установить зависимости
+pip install -r requirements.txt
+```
+
+> Модели (Whisper ~145 MB, YOLOv8n ~6 MB, CLIP ~150 MB) скачиваются **автоматически** при первом запуске.
+
+---
+
+### Запуск Gradio UI
+
+```bash
+# Локально — открыть http://localhost:7860
+python run_ui.py
+
+# С публичным URL (72 часа, не нужен сервер)
+python run_ui.py --share
+
+# На другом порту
+python run_ui.py --port 8080
+```
+
+При запуске с `--share` в консоли появится ссылка вида:
+```
+Running on public URL: https://xxxxxxxxxxxx.gradio.live
+```
+Эту ссылку можно открыть на **любом устройстве** без VPN.
+
+---
+
+### Запуск REST API (FastAPI)
+
+```bash
+# Запустить сервер
+python run_api.py
+
+# Интерактивная документация: http://localhost:8000/docs
+```
+
+#### Синхронный запрос (POST → сразу JSON)
+
+```bash
+curl -X POST http://localhost:8000/analyze/sync \
+     -H "Content-Type: application/json" \
+     -d '{"url": "https://www.youtube.com/watch?v=XXXX"}'
+```
+
+Параметры запроса:
+
+| Поле | Тип | По умолчанию | Описание |
+|------|-----|-------------|----------|
+| `url` | string | *обязательно* | Ссылка на YouTube |
+| `quality` | string | `720p` | Качество видео: `360p`, `480p`, `720p`, `1080p` |
+| `whisper_model` | string | `tiny` | Модель Whisper: `tiny`, `base`, `small`, `medium` |
+| `use_clip` | bool | `true` | Включить CLIP-анализ сцен |
+| `use_ocr` | bool | `false` | Включить OCR (медленно) |
+
+Пример ответа:
+
+```json
+{
+  "report_type": "TIME_BASED_REPORT",
+  "source_info": {
+    "frameCount": 5400,
+    "fps": 30.0,
+    "video_duration_formatted": "0:03:00"
+  },
+  "detections": [
+    {
+      "startFrame": 450,
+      "endFrame": 600,
+      "start_time": "00:00:15",
+      "end_time": "00:00:20",
+      "time_interval": "00:00:15 - 00:00:20",
+      "subclass": "alcohol",
+      "confidence": 0.82,
+      "type": "video"
+    }
+  ],
+  "sourceInfo": {
+    "video_duration_seconds": 180.0,
+    "processing_time_seconds": 95.3,
+    "processing_efficiency": 0.53
+  }
+}
+```
+
+#### Асинхронный режим (для длинных видео)
+
+```bash
+# Шаг 1: запустить задачу
+curl -X POST http://localhost:8000/analyze \
+     -H "Content-Type: application/json" \
+     -d '{"url": "https://www.youtube.com/watch?v=XXXX", "quality": "720p"}'
+# → {"task_id": "abc123def456", "status": "queued", ...}
+
+# Шаг 2: следить за прогрессом
+curl http://localhost:8000/status/abc123def456
+# → {"status": "video", "progress": 0.65, "message": "Аудио: 3 события", ...}
+
+# Шаг 3: забрать результат
+curl http://localhost:8000/result/abc123def456
+# → полный JSON-отчёт
+```
+
+---
+
+### Перенос на MacBook
+
+MacBook на Apple Silicon (M1/M2/M3) поддерживается полностью:
+
+```bash
+# На MacBook должен быть Python 3.10+
+# Если нет — установить через Homebrew:
+brew install python@3.12
+
+# Дальше — те же команды что выше:
+git clone https://github.com/flipiwolker-alt/cv-video-analytics.git
+cd cv-video-analytics
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python run_ui.py
+```
+
+> PyTorch на Apple Silicon использует **MPS-ускорение** автоматически.  
+> `.venv` папку переносить с Windows **не нужно** — она платформозависима.
+
+---
+
+### Структура `src/` (новый модуль)
+
+```
+src/
+├── ui.py          ← Gradio-интерфейс с прогресс-деревом
+├── pipeline.py    ← VideoAnalyzer — параллельный запуск всех этапов
+├── main.py        ← FastAPI: /analyze, /analyze/sync, /status, /result
+├── schemas.py     ← Pydantic-схемы (TimeBasedReport, Detection, ...)
+├── subclass_info.py ← Словарь 9 категорий (цвета, иконки, severity)
+├── pz1_keyframes.py ← Извлечение ключевых кадров (scene detection)
+├── pz3_ocr.py     ← OCR через EasyOCR
+├── pz4_audio.py   ← Whisper + keyword-классификация
+├── pz5_yolo.py    ← YOLOv8n детекция объектов
+└── pz6_clip.py    ← CLIP zero-shot классификация сцен
+```
 
 ---
 
