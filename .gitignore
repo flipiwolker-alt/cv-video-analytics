@@ -28,11 +28,7 @@ data/sample_images/*.png
 data/sample_images/*.jpeg
 
 # Outputs — результаты генерируются локально
-outputs/frames/
-outputs/ocr_results/
-outputs/detections/
-outputs/classifications/
-outputs/final_report.json
+outputs/
 
 # Models — веса моделей не в git (слишком большие)
 *.pt
