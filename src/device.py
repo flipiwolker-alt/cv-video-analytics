@@ -30,6 +30,9 @@ if _CUDA:
     DEVICE = "cuda"
 elif _MPS:
     DEVICE = "mps"
+    # Неподдержанные MPS-операции уводим на CPU, чтобы ничего не падало на Маке
+    import os
+    os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 else:
     DEVICE = "cpu"
 
