@@ -5,8 +5,9 @@ ROOT = Path(__file__).parent.parent
 
 # ── Папка для хранения всех моделей ──────────────────────────────────────────
 # Приоритет: 1) переменная окружения CV_MODELS_DIR
-#             2) E:\cv_models  (создайте вручную в Проводнике если нет)
-#             3) C:\Users\User\cv_models  (запасной вариант)
+#             2) E:\cv_models / C:\Users\User\cv_models  (Windows)
+#             3) ~/.cache/cv_models  (Mac/Linux/Kaggle — кроссплатформенно)
+#             4) <корень проекта>/models  (последний фолбэк)
 
 def _can_write(p: Path) -> bool:
     """Проверяет реальную возможность записи: пытается создать тестовую подпапку."""
@@ -23,7 +24,11 @@ def _resolve_models_dir() -> Path:
     candidates = []
     if "CV_MODELS_DIR" in os.environ:
         candidates.append(Path(os.environ["CV_MODELS_DIR"]))
-    candidates += [Path(r"E:\cv_models"), Path(r"C:\Users\User\cv_models")]
+    candidates += [
+        Path(r"E:\cv_models"), Path(r"C:\Users\User\cv_models"),  # Windows
+        Path.home() / ".cache" / "cv_models",                      # Mac/Linux/Kaggle
+        ROOT / "models",                                           # фолбэк в проекте
+    ]
 
     for p in candidates:
         try:

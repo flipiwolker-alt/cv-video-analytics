@@ -77,6 +77,27 @@ SUBCLASS_DICT: dict[str, SubclassEntry] = {
         severity="medium",
         color="#f97316",
     ),
+    "nsfw": SubclassEntry(
+        icon="🔞",
+        ru_name="Порнография / нагота",
+        description="Откровенный сексуальный контент, порнография, обнажённое тело, эротические сцены.",
+        severity="high",
+        color="#be185d",
+    ),
+    "selfharm": SubclassEntry(
+        icon="🩸",
+        ru_name="Суицид / селфхарм",
+        description="Демонстрация, описание или пропаганда самоубийства и членовредительства (порезы, повешение, прыжки).",
+        severity="critical",
+        color="#7f1d1d",
+    ),
+    "animal_cruelty": SubclassEntry(
+        icon="🐾",
+        ru_name="Жестокость к животным",
+        description="Сцены жестокого обращения, насилия, истязания или убийства животных.",
+        severity="high",
+        color="#92400e",
+    ),
 }
 
 SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}

@@ -15,7 +15,12 @@ imageio-ffmpeg>=0.4.9     # встроенный ffmpeg-бинарник (не �
 faster-whisper>=1.0.0     # быстрее openai-whisper, int8-квантизация
 
 # ── Object Detection ──────────────────────────────────────────────────────────
-ultralytics>=8.0.0        # YOLOv8
+ultralytics>=8.1.0        # YOLOv8 + YOLO-World (open-vocabulary)
+# ВАЖНО: matplotlib (см. Core CV выше) обязателен — новые ultralytics импортируют его при старте
+
+# ── LLM-слой ────────────────────────────────────────────────────────────────────
+# Ollama ставится отдельно (https://ollama.com/download), сетевой клиент — httpx (ниже).
+# Python-пакет не нужен: общение по HTTP API localhost:11434.
 
 # ── Scene Classification (CLIP) ───────────────────────────────────────────────
 transformers>=4.35.0

@@ -8,11 +8,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
+import cv2
 import numpy as np
 
 from .pz4_audio import _classify_segment, _fmt_clock
 from .schemas import Detection, DetectionType, Subclass
 from .pz1_keyframes import Keyframe
+from .presets import Preset, get_preset
+from .device import ON_CUDA, gpu_guard
 
 # Модель инициализируется один раз, потом переиспользуется
 _ocr_model = None
@@ -27,23 +30,48 @@ def _get_ocr():
             from .config import MODELS_DIR
             model_dir = str(MODELS_DIR / "easyocr")
             globals()["_ocr_model"] = easyocr.Reader(
-                ["ru", "en"], gpu=False, verbose=False,
+                ["ru", "en"], gpu=ON_CUDA, verbose=False,  # easyocr.gpu = только CUDA
                 model_storage_directory=model_dir,
             )
     return _ocr_model
 
 
+_clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+
+
+def _prep_for_ocr(img_np: np.ndarray, target_long: int = 1280) -> np.ndarray:
+    """Подготовка кадра под OCR: апскейл мелкого кадра + CLAHE-контраст надписей.
+
+    Применяется ТОЛЬКО к OCR-ветке (текст не «натуральная сцена» — распределение
+    для CLIP/SigLIP здесь не важно, а контраст и размер реально поднимают recall).
+    """
+    h, w = img_np.shape[:2]
+    longest = max(h, w)
+    if longest < target_long:
+        scale = min(2.0, target_long / max(longest, 1))
+        img_np = cv2.resize(img_np, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    lab = cv2.cvtColor(img_np, cv2.COLOR_RGB2LAB)
+    l, a, b = cv2.split(lab)
+    l = _clahe.apply(l)
+    return cv2.cvtColor(cv2.merge((l, a, b)), cv2.COLOR_LAB2RGB)
+
+
 def ocr_keyframes(
     keyframes: list[Keyframe],
     fps: float,
+    preset: Preset | str | None = None,
     conf_threshold: float = 0.5,
     min_text_len: int = 4,
-    max_frames: int = 40,
+    max_frames: int | None = None,
+    rotations: bool = False,
 ) -> list[Detection]:
     """
     max_frames — сколько кадров максимум отдать OCR (равномерная подвыборка).
-    EasyOCR на CPU: ~2-4 сек/кадр, поэтому 40 кадров ≈ 2 мин максимум.
+    По умолчанию берётся из пресета. EasyOCR на CPU ~2-4 сек/кадр.
     """
+    p = preset if isinstance(preset, Preset) else get_preset(preset)
+    if max_frames is None:
+        max_frames = p.ocr_max_frames
     reader = _get_ocr()
     detections: list[Detection] = []
 
@@ -52,9 +80,19 @@ def ocr_keyframes(
         step = len(keyframes) // max_frames
         keyframes = keyframes[::step][:max_frames]
 
+    # Тюнинг детектора CRAFT под recall: ниже пороги → ловим бледный/мелкий текст.
+    # Наклонённые строки EasyOCR выпрямляет сам (rectify повёрнутого quad).
+    _det = dict(text_threshold=0.6, low_text=0.3, link_threshold=0.4,
+                mag_ratio=1.0, canvas_size=2560)
+
     for kf in keyframes:
-        img_np = np.array(kf.image)
-        results = reader.readtext(img_np, detail=1, paragraph=False)
+        img_np = _prep_for_ocr(np.array(kf.image))   # CPU-препроцесс
+        with gpu_guard():                             # GPU-распознавание сериализуем
+            results = reader.readtext(img_np, detail=1, paragraph=False, **_det)
+            # Текста нет совсем — возможно, он повёрнут на 90°/180°: пробуем повороты
+            if rotations and not results:
+                results = reader.readtext(img_np, detail=1, paragraph=False,
+                                          rotation_info=[90, 180, 270], **_det)
 
         full_text = " ".join(
             text

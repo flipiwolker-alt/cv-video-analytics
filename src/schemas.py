@@ -18,6 +18,9 @@ class Subclass(str, Enum):
     violence = "violence"
     vandalism = "vandalism"
     profanity = "profanity"
+    nsfw = "nsfw"
+    selfharm = "selfharm"
+    animal_cruelty = "animal_cruelty"
 
 
 class DetectionType(str, Enum):
@@ -60,11 +63,15 @@ class TimeBasedReport(BaseModel):
     source_info: TopSourceInfo
     detections: list[Detection]
     sourceInfo: SourceInfo
+    preset: Optional[str] = None
+    llm_summary: Optional[str] = None
 
 
 class AnalyzeRequest(BaseModel):
     url: HttpUrl
     quality: str = "720p"
+    preset: str = "balanced"
+    use_llm: bool = True
     keyframe_stride_sec: float = 1.0
 
 

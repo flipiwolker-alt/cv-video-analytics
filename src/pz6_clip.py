@@ -1,18 +1,30 @@
-"""PZ6: Zero-shot классификация сцены через CLIP.
+"""PZ6: Zero-shot классификация сцены.
 
-Совместим с transformers 4.x и 5.x (обе версии меняют возврат get_text_features).
-Модель: openai/clip-vit-base-patch32 (~150 MB, скачивается один раз).
+Бэкенд выбирается по имени модели в пресете:
+  • SigLIP 2 (google/siglip2-*)  — по умолчанию, точнее и меньше ложняков;
+  • CLIP (openai/clip-*)         — fallback / совместимость.
+
+Точность:
+  • Ансамбль промптов: скор класса = максимум сходства по его формулировкам.
+  • Калиброванная уверенность через нейтральный baseline: вероятность =
+    сигмоида от разницы «сходство с классом − сходство с нейтральной сценой».
+    Относительная схема устойчива к тому, что абсолютные сходства «плавают».
+  • Строгий порог вероятности — режет пограничный мусор (0.5x).
+
+Совместимо с transformers 4.x/5.x.
 """
 from __future__ import annotations
 
+import math
 import threading
-from pathlib import Path
 
 import torch
 
 from .pz4_audio import _fmt_clock
 from .schemas import Detection, DetectionType, Subclass
 from .pz1_keyframes import Keyframe
+from .presets import Preset, get_preset
+from .device import DEVICE, gpu_guard
 
 _PROMPTS: dict[str, list[str]] = {
     "alcohol": [
@@ -48,12 +60,14 @@ _PROMPTS: dict[str, list[str]] = {
     "lgbt": [
         "LGBT propaganda aimed at children",
         "same sex couple targeting minors propaganda",
+        "rainbow pride flag activism",
     ],
     "violence": [
         "violent fight people hitting each other",
         "person being attacked or beaten up",
         "graphic violence blood injury",
         "people fighting brawl street",
+        "person pointing a gun weapon",
     ],
     "vandalism": [
         "graffiti spray paint on walls",
@@ -62,134 +76,164 @@ _PROMPTS: dict[str, list[str]] = {
         "smashing breaking public property",
     ],
     "profanity": [
-        "person shouting and swearing aggressively",
-        "angry person using offensive language",
         "screen showing profanity or obscene text",
         "subtitle or caption with swear words",
+        "offensive obscene writing on screen",
+    ],
+    "nsfw": [
+        "explicit sexual content nudity",
+        "naked person exposed body",
+        "pornographic adult scene",
+        "person in underwear suggestive pose",
+    ],
+    "selfharm": [
+        "person cutting their wrist self harm",
+        "suicide attempt hanging from a rope noose",
+        "scars and cuts on arm from self harm",
+        "person standing on the edge of a high building",
+    ],
+    "animal_cruelty": [
+        "a person beating or hitting an animal",
+        "injured abused animal in distress",
+        "cruelty and violence towards an animal",
+        "a dead or mistreated animal",
     ],
 }
 
-# Нейтральные промпты — baseline для отсечки ложных срабатываний.
-# Кадр помечается только если его сходство с классом ПРЕВЫШАЕТ нейтральный
-# baseline на величину _MARGIN, а не просто перекрывает абсолютный порог.
+# Нейтральные промпты — baseline «обычной» сцены.
 _NEUTRAL_PROMPTS: list[str] = [
     "a normal everyday scene",
     "people walking on a street",
     "a person talking to camera",
     "indoor scene people sitting",
     "outdoor landscape nature",
+    "a regular conversation between people",
+    "ordinary household objects",
+    "a music performance on stage",
+    "a person sitting at a desk",
 ]
 
-# Минимальный абсолютный порог — ниже него даже «победитель» не считается
-_SIM_THRESHOLD = 0.22
-# Минимальное превышение над нейтральным baseline
-_NEUTRAL_MARGIN = 0.03
+# Масштаб сигмоиды (разница сходств мала → большой масштаб).
+_LOGIT_SCALE = 50.0
+# Строгий порог вероятности для срабатывания (поднят, чтобы убрать пограничный мусор).
+_PROB_THRESHOLD = 0.72
+# Минимальный разрыв с нейтральным baseline (абсолютный, в единицах cosine).
+_MIN_GAP = 0.015
+# Абсолютный пол сходства по бэкендам (у SigLIP cosine ниже, чем у CLIP).
+_SIM_FLOOR = {"clip": 0.20, "siglip": 0.05}
 
-_clip_model = None
-_clip_processor = None
-_text_features: dict[str, torch.Tensor] = {}
-_neutral_features: torch.Tensor | None = None
-_clip_lock = threading.Lock()
+_models: dict[str, dict] = {}
+_lock = threading.Lock()
 
 
 def _to_tensor(output) -> torch.Tensor:
-    """Извлекает тензор из вывода CLIP — совместимо с transformers 4.x и 5.x."""
     if isinstance(output, torch.Tensor):
         return output
-    # transformers 5.x: CLIPTextModelOutput / CLIPVisionModelOutput
-    for attr in ("text_embeds", "image_embeds", "pooler_output", "last_hidden_state"):
+    for attr in ("image_embeds", "text_embeds", "pooler_output", "last_hidden_state"):
         val = getattr(output, attr, None)
         if val is not None and isinstance(val, torch.Tensor):
-            # pooler_output и last_hidden_state — берём CLS-токен если 3D
             return val[:, 0] if val.dim() == 3 else val
     raise TypeError(f"Не удалось извлечь тензор из {type(output).__name__}")
 
 
-def _init_clip():
-    """Thread-safe инициализация CLIP. Вызывается один раз."""
-    global _clip_model, _clip_processor, _text_features, _neutral_features
+def _backend(model_id: str) -> str:
+    return "siglip" if "siglip" in model_id.lower() else "clip"
 
-    if _clip_model is not None:
-        return
 
-    with _clip_lock:
-        if _clip_model is not None:  # double-checked locking
-            return
+def _init(model_id: str) -> dict:
+    """Thread-safe загрузка модели и предвычисление текстовых эмбеддингов."""
+    with _lock:
+        if model_id in _models:
+            return _models[model_id]
 
-        from transformers import CLIPModel, CLIPProcessor
+        backend = _backend(model_id)
+        if backend == "siglip":
+            from transformers import AutoModel, AutoProcessor
+            model = AutoModel.from_pretrained(model_id)
+            processor = AutoProcessor.from_pretrained(model_id)
+            text_kwargs = dict(padding="max_length", max_length=64, truncation=True)
+        else:
+            from transformers import CLIPModel, CLIPProcessor
+            model = CLIPModel.from_pretrained(model_id)
+            processor = CLIPProcessor.from_pretrained(model_id)
+            text_kwargs = dict(padding=True)
+        model.eval().to(DEVICE)
 
-        model_id = "openai/clip-vit-base-patch32"
-        _clip_model = CLIPModel.from_pretrained(model_id)
-        _clip_processor = CLIPProcessor.from_pretrained(model_id)
-        _clip_model.eval()
+        def _encode_text(texts: list[str]) -> torch.Tensor:
+            tok = processor(text=texts, return_tensors="pt", **text_kwargs).to(DEVICE)
+            with torch.no_grad(), gpu_guard():
+                feats = _to_tensor(model.get_text_features(**tok))
+            return feats / feats.norm(dim=-1, keepdim=True)
 
-        # Предвычисляем эмбеддинги всех текстовых промптов один раз
         all_texts = [t for prompts in _PROMPTS.values() for t in prompts]
-        tok = _clip_processor(text=all_texts, return_tensors="pt", padding=True)
-        with torch.no_grad():
-            raw = _clip_model.get_text_features(**tok)
-            feats = _to_tensor(raw)
-            feats = feats / feats.norm(dim=-1, keepdim=True)
-
+        feats = _encode_text(all_texts)
+        text_features: dict[str, torch.Tensor] = {}
         idx = 0
         for cls, prompts in _PROMPTS.items():
             n = len(prompts)
-            _text_features[cls] = feats[idx:idx + n]
+            text_features[cls] = feats[idx:idx + n]
             idx += n
 
-        # Предвычисляем нейтральный baseline — mean-pooled эмбеддинг нейтральных сцен
-        ntok = _clip_processor(text=_NEUTRAL_PROMPTS, return_tensors="pt", padding=True)
-        with torch.no_grad():
-            nraw = _clip_model.get_text_features(**ntok)
-            nfeats = _to_tensor(nraw)
-            nfeats = nfeats / nfeats.norm(dim=-1, keepdim=True)
-        _neutral_features = nfeats  # shape (n_neutral, D)
+        bundle = {
+            "backend": backend,
+            "model": model,
+            "processor": processor,
+            "text_features": text_features,
+            "neutral_features": _encode_text(_NEUTRAL_PROMPTS),
+            "floor": _SIM_FLOOR[backend],
+        }
+        _models[model_id] = bundle
+        return bundle
 
 
 def clip_keyframes(
     keyframes: list[Keyframe],
     fps: float,
+    preset: Preset | str | None = None,
     batch_size: int = 8,
-    threshold: float = _SIM_THRESHOLD,
-    max_frames: int = 80,
+    max_frames: int | None = None,
 ) -> list[Detection]:
-    """Прогоняет CLIP zero-shot по keyframe-ам, возвращает детекции."""
-    if len(keyframes) > max_frames:
-        step = max(1, len(keyframes) // max_frames)
-        keyframes = keyframes[::step][:max_frames]
+    """Zero-shot классификация сцены по keyframe-ам (SigLIP 2 / CLIP)."""
+    p = preset if isinstance(preset, Preset) else get_preset(preset)
+    model_id = p.clip_model
+    cap = max_frames if max_frames is not None else p.clip_max_frames
 
-    _init_clip()
+    if len(keyframes) > cap:
+        step = max(1, len(keyframes) // cap)
+        keyframes = keyframes[::step][:cap]
+
+    bundle = _init(model_id)
+    model = bundle["model"]
+    processor = bundle["processor"]
+    text_features = bundle["text_features"]
+    neutral_features = bundle["neutral_features"]
+    floor = bundle["floor"]
+
     detections: list[Detection] = []
 
     for i in range(0, len(keyframes), batch_size):
         batch = keyframes[i:i + batch_size]
         images = [kf.image for kf in batch]
 
-        pix = _clip_processor(images=images, return_tensors="pt")
-        with torch.no_grad():
-            raw_img = _clip_model.get_image_features(**pix)
-            img_feats = _to_tensor(raw_img)
+        pix = processor(images=images, return_tensors="pt").to(DEVICE)
+        with torch.no_grad(), gpu_guard():
+            img_feats = _to_tensor(model.get_image_features(**pix))
             img_feats = img_feats / img_feats.norm(dim=-1, keepdim=True)
 
-        # Нейтральный baseline: максимальное сходство с нейтральными промптами
-        neutral_sims = img_feats @ _neutral_features.T   # (batch, n_neutral)
-        neutral_scores = neutral_sims.max(dim=-1).values  # (batch,)
+        neutral_scores = (img_feats @ neutral_features.T).max(dim=-1).values  # (batch,)
 
         for (kf, img_feat), neutral_score in zip(zip(batch, img_feats), neutral_scores):
             ns = float(neutral_score)
-            for subclass, text_feats in _text_features.items():
-                sims = img_feat @ text_feats.T      # (n_prompts,)
-                max_sim = float(sims.max())
-
-                # Пропускаем если не превышает абсолютный порог ИЛИ нейтральный baseline
-                if max_sim < threshold:
+            for subclass, feats in text_features.items():
+                max_sim = float((img_feat @ feats.T).max())
+                gap = max_sim - ns
+                if max_sim < floor or gap < _MIN_GAP:
                     continue
-                if max_sim < ns + _NEUTRAL_MARGIN:
+                prob = 1.0 / (1.0 + math.exp(-_LOGIT_SCALE * gap))
+                if prob < _PROB_THRESHOLD:
                     continue
-
-                # Масштабируем similarity → confidence [0.50, 0.98]
-                conf = 0.50 + (max_sim - threshold) / max(0.40 - threshold, 0.01) * 0.48
-                conf = round(min(conf, 0.98), 3)
+                conf = round(min(0.98, 0.5 + (prob - _PROB_THRESHOLD) /
+                                 (1.0 - _PROB_THRESHOLD) * 0.48), 3)
 
                 t0 = max(0.0, kf.time_sec - 0.5)
                 t1 = kf.time_sec + 1.5

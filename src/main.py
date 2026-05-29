@@ -37,8 +37,8 @@ app.add_middleware(
 TASKS: dict[str, TaskInfo] = {}
 
 
-def _make_analyzer() -> VideoAnalyzer:
-    return VideoAnalyzer(dummy=False, offline=False, whisper_model="tiny")
+def _make_analyzer(preset: str = "balanced", use_llm: bool = True) -> VideoAnalyzer:
+    return VideoAnalyzer(dummy=False, offline=False, preset=preset, use_llm=use_llm)
 
 
 # ── Health-check ──────────────────────────────────────────────────────────────
@@ -64,7 +64,7 @@ async def analyze_async(req: AnalyzeRequest, bg: BackgroundTasks):
         created_at=datetime.now().isoformat(),
     )
     TASKS[task_id] = info
-    bg.add_task(_run_task, task_id, str(req.url), req.quality)
+    bg.add_task(_run_task, task_id, str(req.url), req.quality, req.preset, req.use_llm)
     return info
 
 
@@ -91,9 +91,14 @@ def get_result(task_id: str):
 class SyncRequest(BaseModel):
     url: str
     quality: str = "720p"
-    whisper_model: str = "tiny"
+    preset: str = "balanced"          # fast | balanced | accurate
     use_clip: bool = True
-    use_ocr: bool = False
+    use_ocr: bool = True              # текст в кадре (баннеры/субтитры/логотипы); медленно на CPU
+    use_nsfw: bool = True             # профильный детектор порнографии/наготы
+    use_action: bool = True           # X-CLIP: действия по видео-окну (драка/порча); тяжело на CPU
+    use_llm: bool = True              # LLM-классификация речи + резюме (Ollama)
+    use_llm_vision: bool = False      # vision-проверка кадров (медленно на CPU)
+    whisper_model: str | None = None  # переопределяет размер из пресета
 
 
 @app.post("/analyze/sync", summary="Анализ и сразу результат (синхронно, до 5 мин)")
@@ -111,9 +116,14 @@ async def analyze_sync(req: SyncRequest):
     analyzer = VideoAnalyzer(
         dummy=False,
         offline=False,
+        preset=req.preset,
         whisper_model=req.whisper_model,
         use_clip=req.use_clip,
         use_ocr=req.use_ocr,
+        use_nsfw=req.use_nsfw,
+        use_action=req.use_action,
+        use_llm=req.use_llm,
+        use_llm_vision=req.use_llm_vision,
     )
     try:
         report, _media = await analyzer.run(req.url, quality=req.quality)
@@ -124,7 +134,8 @@ async def analyze_sync(req: SyncRequest):
 
 # ── Background worker ─────────────────────────────────────────────────────────
 
-async def _run_task(task_id: str, url: str, quality: str) -> None:
+async def _run_task(task_id: str, url: str, quality: str,
+                    preset: str = "balanced", use_llm: bool = True) -> None:
     info = TASKS[task_id]
 
     async def on_progress(p: float, msg: str) -> None:
@@ -140,7 +151,7 @@ async def _run_task(task_id: str, url: str, quality: str) -> None:
             info.status = TaskStatus.aggregating
 
     try:
-        analyzer = _make_analyzer()
+        analyzer = _make_analyzer(preset=preset, use_llm=use_llm)
         report, _media = await analyzer.run(url, quality=quality, on_progress=on_progress)
         info.report = report
         info.status = TaskStatus.done

@@ -30,6 +30,9 @@ from .pz3_ocr import ocr_keyframes
 from .pz4_audio import transcribe_and_classify as _run_pz4
 from .pz5_yolo import yolo_keyframes
 from .pz6_clip import clip_keyframes
+from .pz7_nsfw import nsfw_keyframes
+from .pz8_action import xclip_action
+from .presets import get_preset, DEFAULT_PRESET
 
 from .schemas import (
     Detection,
@@ -51,6 +54,9 @@ _SUBCLASS_COLORS = {
     "lgbt":      (236, 72, 153),
     "violence":  (185, 28, 28),
     "vandalism": (217, 119, 6),
+    "nsfw":          (190, 24, 93),
+    "selfharm":      (127, 29, 29),
+    "animal_cruelty": (146, 64, 14),
 }
 
 
@@ -89,6 +95,7 @@ def _placeholder_frame(subclass: str, time_interval: str, confidence: float) -> 
         "alcohol": "ALCOHOL", "drugs": "DRUGS", "smoking": "SMOKING",
         "extremism": "EXTREMISM", "ludomania": "GAMBLING",
         "lgbt": "LGBT", "violence": "VIOLENCE", "vandalism": "VANDALISM",
+        "nsfw": "NSFW", "selfharm": "SELF-HARM", "animal_cruelty": "ANIMAL CRUELTY",
     }
     draw.text((w // 2, h // 2 - 40), label_map.get(subclass, subclass.upper()),
               fill=(255, 255, 255), anchor="mm")
@@ -120,17 +127,28 @@ class VideoAnalyzer:
         self,
         dummy: bool = True,
         offline: bool = False,
-        whisper_model: str = "tiny",
+        preset: str = DEFAULT_PRESET,
+        whisper_model: Optional[str] = None,
         use_ocr: bool = True,
         use_clip: bool = True,
-        stage_timeout: float = 180.0,
+        use_nsfw: bool = True,
+        use_action: bool = True,
+        use_llm: bool = True,
+        use_llm_vision: bool = False,
+        stage_timeout: float = 600.0,
         clips_dir: Optional[Path] = None,
     ):
         self.dummy = dummy
         self.offline = offline
+        self.preset = get_preset(preset)
+        # явный whisper_model переопределяет пресет (обратная совместимость)
         self.whisper_model = whisper_model
         self.use_ocr = use_ocr
         self.use_clip = use_clip
+        self.use_nsfw = use_nsfw
+        self.use_action = use_action
+        self.use_llm = use_llm
+        self.use_llm_vision = use_llm_vision
         self.stage_timeout = stage_timeout
         self.clips_dir = clips_dir or Path("outputs/clips")
 
@@ -178,12 +196,26 @@ class VideoAnalyzer:
             await progress(0.92, "Извлекаю кадры и клипы...")
             media = await self._extract_media(video_path, detections, fps, duration_sec)
 
+            # ── LLM vision-проверка пограничных видео-детекций (опц.) ──────
+            if self.use_llm and self.use_llm_vision and not self.offline:
+                await progress(0.95, "LLM-проверка кадров...")
+                media = await self._llm_verify(media)
+                detections = [m.detection for m in media]
+
+            # ── LLM-резюме отчёта (опц.) ───────────────────────────────────
+            llm_summary = None
+            if self.use_llm and not self.offline:
+                await progress(0.98, "LLM-резюме...")
+                llm_summary = await self._llm_summary(detections)
+
             await progress(1.0, "Готово.")
 
         processing_time = time.time() - t0
         now = datetime.now().isoformat()
 
         report = TimeBasedReport(
+            preset=self.preset.name,
+            llm_summary=llm_summary,
             source_info=TopSourceInfo(
                 frameCount=frame_count,
                 fps=fps,
@@ -244,19 +276,29 @@ class VideoAnalyzer:
         loop = asyncio.get_event_loop()
 
         # PZ1 — keyframes (должен быть первым, остальные зависят от него)
+        preset = self.preset
         keyframes = await loop.run_in_executor(
-            self._pool, lambda: extract_keyframes(video_path, stride_sec=1.5)
+            self._pool,
+            lambda: extract_keyframes(
+                video_path,
+                stride_sec=preset.keyframe_stride_sec,
+                sharp_window=preset.sharp_window,
+            ),
         )
         await progress(0.30, f"Кадры готовы: {len(keyframes)} шт.")
 
         # ── Параллельный запуск PZ3 + PZ5 + PZ6 ─────────────────────────────
         stage_map: dict[str, object] = {
-            "yolo": lambda: yolo_keyframes(keyframes, fps),
+            "yolo": lambda: yolo_keyframes(keyframes, fps, preset),
         }
         if self.use_ocr:
-            stage_map["ocr"] = lambda: ocr_keyframes(keyframes, fps)
+            stage_map["ocr"] = lambda: ocr_keyframes(keyframes, fps, preset)
         if self.use_clip:
-            stage_map["clip"] = lambda: clip_keyframes(keyframes, fps)
+            stage_map["clip"] = lambda: clip_keyframes(keyframes, fps, preset)
+        if self.use_nsfw:
+            stage_map["nsfw"] = lambda: nsfw_keyframes(keyframes, fps)
+        if self.use_action:
+            stage_map["action"] = lambda: xclip_action(keyframes, fps)
 
         await progress(0.33, f"Параллельный анализ: {', '.join(stage_map.keys())}...")
 
@@ -288,21 +330,43 @@ class VideoAnalyzer:
             await asyncio.sleep(0.5)
             return self._mock_audio_detections(fps, duration)
 
-        # PZ4: реальный Whisper
+        # PZ4: реальный Whisper (+ опц. LLM-классификация транскрипта)
         loop = asyncio.get_event_loop()
         detections = await loop.run_in_executor(
             None,
-            lambda: _run_pz4(video_path, fps, self.whisper_model),
+            lambda: _run_pz4(
+                video_path, fps,
+                preset=self.preset,
+                model_size=self.whisper_model,
+                use_llm=self.use_llm,
+            ),
         )
         await progress(0.65, f"Аудио: {len(detections)} событий")
         return detections
 
     # ── Post-processing (PZ8) ────────────────────────────────────────────────
 
+    def _cross_modal_boost(self, detections: list[Detection], fps: float) -> None:
+        """Кросс-модальное согласие: если один субкласс независимо найден и в
+        аудио, и в видео в пересекающихся интервалах — поднимаем уверенность
+        обеим детекциям. Согласие двух модальностей — сильный сигнал, что это
+        не ложняк. Мутирует confidence на месте.
+        """
+        tol = int(2.0 * fps)  # допускаем расхождение тайм-кодов до 2 сек
+        for d in detections:
+            for o in detections:
+                if o is d or o.subclass != d.subclass or o.type == d.type:
+                    continue
+                # пересечение интервалов с допуском
+                if d.startFrame - tol <= o.endFrame and o.startFrame - tol <= d.endFrame:
+                    d.confidence = round(min(0.99, d.confidence + 0.12), 3)
+                    break
+
     def _postprocess(self, detections: list[Detection], fps: float = 30.0) -> list[Detection]:
-        """Temporal NMS: объединяем близкие детекции одного класса."""
+        """Кросс-модальная фьюзия + temporal NMS по каждому субклассу."""
         if not detections:
             return []
+        self._cross_modal_boost(detections, fps)
         gap_frames = int(2.0 * fps)
         by_class: dict[str, list[Detection]] = {}
         for d in detections:
@@ -389,6 +453,51 @@ class VideoAnalyzer:
             return out
         except Exception:
             return None
+
+    # ── LLM-слой (опционально, поверх ядра) ────────────────────────────────────
+
+    async def _llm_verify(self, media: list[DetectionMedia]) -> list[DetectionMedia]:
+        """Vision-проверка пограничных видео-детекций. Отбрасывает не подтверждённые,
+        поднимает уверенность подтверждённым. Аудио-детекции не трогаем.
+        """
+        from . import llm as _llm
+        model = self.preset.llm_vision_model
+        if not _llm.is_available(model):
+            return media
+
+        loop = asyncio.get_event_loop()
+        kept: list[DetectionMedia] = []
+        for m in media:
+            d = m.detection
+            borderline = (d.type == DetectionType.video
+                          and m.frame is not None
+                          and 0.45 <= d.confidence < 0.70)
+            if not borderline:
+                kept.append(m)
+                continue
+            conf = await loop.run_in_executor(
+                self._pool,
+                lambda fr=m.frame, sub=d.subclass.value:
+                    _llm.verify_frame(fr, sub, model),
+            )
+            if conf is None:                # LLM не ответил — оставляем как есть
+                kept.append(m)
+            elif conf <= 0.0:               # не подтверждено — отбрасываем
+                continue
+            else:                           # подтверждено — берём максимум
+                d.confidence = round(max(d.confidence, conf), 3)
+                kept.append(m)
+        return kept
+
+    async def _llm_summary(self, detections: list[Detection]) -> Optional[str]:
+        from . import llm as _llm
+        model = self.preset.llm_text_model
+        if not detections or not _llm.is_available(model):
+            return None
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            self._pool, lambda: _llm.summarize(detections, model)
+        )
 
     # ── Mock helpers ──────────────────────────────────────────────────────────
 
