@@ -10,8 +10,9 @@
 Открой **Терминал** на Маке и выполни:
 
 ```bash
-git clone https://github.com/flipiwolker-alt/cv-video-analytics.git
-cd cv-video-analytics
+# Если папка уже есть — обновим, иначе склонируем
+[ -d ~/cv-video-analytics ] && git -C ~/cv-video-analytics pull || git clone https://github.com/flipiwolker-alt/cv-video-analytics.git ~/cv-video-analytics
+cd ~/cv-video-analytics
 bash scripts/setup_mac.sh
 ```
 
@@ -28,7 +29,7 @@ bash scripts/setup_mac.sh
 ## 🎬 НА ЗАЩИТЕ (запуск за 30 секунд)
 
 ```bash
-cd cv-video-analytics
+cd ~/cv-video-analytics
 source .venv/bin/activate
 ollama serve >/dev/null 2>&1 &      # поднять LLM, если не запущен
 python run_ui.py
