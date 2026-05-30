@@ -43,14 +43,14 @@ _PHRASES: dict[str, list[str]] = {
         "Объединяю соседние фрагменты...", "Аудио-анализ завершён!",
     ],
     "yo": [
-        "Загружаю YOLOv8n...", "Инициализирую детектор...",
+        "Загружаю YOLOv11...", "Инициализирую детектор...",
         "Обнаруживаю объекты в кадрах...", "Ищу бутылки и алкоголь...",
         "Детектирую сигареты и вейпы...", "Проверяю наличие оружия...",
         "Фильтрую по порогу уверенности...", "Сопоставляю с субклассами...",
         "YOLO завершил работу!",
     ],
     "cl": [
-        "Загружаю CLIP ViT-B/32...", "Кодирую текстовые промпты...",
+        "Загружаю SigLIP 2...", "Кодирую текстовые промпты...",
         "Вычисляю эмбеддинги кадров...", "Анализирую контекст сцен...",
         "Ищу нарушения в кадре...", "Сравниваю с neutral baseline...",
         "Фильтрую ложные срабатывания...", "CLIP завершил классификацию!",
@@ -98,24 +98,18 @@ def _rand_phrase(frac: float) -> str:
 
 # ── Утилиты ──────────────────────────────────────────────────────────────────
 
-def _make_analyzer(whisper_model: str, use_ocr: bool, use_clip: bool) -> VideoAnalyzer:
+def _make_analyzer(preset: str) -> VideoAnalyzer:
+    # Пресет сам выбирает размеры всех моделей и какие каналы включены.
     return VideoAnalyzer(
         dummy=False, offline=False,
-        whisper_model=whisper_model,
-        use_ocr=use_ocr,
-        use_clip=use_clip,
+        preset=preset,
         stage_timeout=240.0,
     )
 
 
-def _estimate_eta(use_ocr: bool, use_clip: bool, whisper_model: str) -> int:
-    t = 25
-    t += {"tiny": 35, "base": 55, "small": 100, "medium": 200}.get(whisper_model, 55)
-    t += 16
-    if use_clip: t += 18
-    if use_ocr:  t += 90
-    t += 15
-    return t
+def _estimate_eta(preset: str) -> int:
+    # Грубый ориентир по времени (CPU). На GPU/MPS — кратно быстрее.
+    return {"fast": 90, "balanced": 240, "accurate": 480}.get(preset, 240)
 
 
 # ── Дерево прогресса (чистый HTML, Python обновляет) ─────────────────────────
@@ -125,8 +119,6 @@ def _progress_html(
     phrase: str,
     t_start: float,
     eta_total: int,
-    use_clip: bool = True,
-    use_ocr: bool = False,
 ) -> str:
     pct = max(1, min(99, int(frac * 100)))
 
@@ -155,9 +147,14 @@ def _progress_html(
         )
 
         if sid == "par":
-            subs = [("🎤", "Речь (Whisper)"), ("📦", "Объекты (YOLO)")]
-            if use_clip: subs.append(("🧠", "Сцены (CLIP)"))
-            if use_ocr:  subs.append(("📝", "Текст (OCR)"))
+            subs = [
+                ("🎤", "Речь (Whisper)"),
+                ("📦", "Объекты (YOLOv11 + World)"),
+                ("🧠", "Сцены (SigLIP 2)"),
+                ("🔞", "NSFW (Falconsai)"),
+                ("🎬", "Действия (X-CLIP)"),
+                ("📝", "Текст (OCR)"),
+            ]
 
             sub_rows = ""
             for sicon, slabel in subs:
@@ -370,17 +367,21 @@ def _timeline_html(report: TimeBasedReport) -> str:
     )
 
 
-def _tech_html(use_ocr: bool, use_clip: bool, whisper_model: str) -> str:
-    wd = {
-        "tiny": "Tiny — быстрый", "base": "Base — сбалансированный",
-        "small": "Small — точный", "medium": "Medium — максимальный",
-    }.get(whisper_model, whisper_model)
+def _tech_html(preset: str) -> str:
+    yolo = {"fast": "YOLOv11s", "balanced": "YOLOv11m", "accurate": "YOLOv11x"}.get(preset, "YOLOv11m")
+    siglip = {"fast": "SigLIP2 base/224", "balanced": "SigLIP2 base/384",
+              "accurate": "SigLIP2 so400m"}.get(preset, "SigLIP2 base/384")
+    whisper = {"fast": "small", "balanced": "large-v3-turbo",
+               "accurate": "large-v3"}.get(preset, "large-v3-turbo")
     chips = [
-        ("#22c55e", f"🎤 Речь: Whisper {wd}"),
-        ("#f59e0b", "📦 Объекты: YOLOv8n — бутылки, оружие"),
+        ("#22c55e", f"🎤 Речь: Whisper {whisper}"),
+        ("#f59e0b", f"📦 Объекты: {yolo} + YOLO-World (open-vocab)"),
+        ("#8b5cf6", f"🧠 Сцены: {siglip}"),
+        ("#ef4444", "🔞 NSFW: Falconsai — нагота/порно"),
+        ("#ec4899", "🎬 Действия: X-CLIP — драки/вандализм"),
+        ("#06b6d4", "📝 Текст: EasyOCR — субтитры и надписи"),
+        ("#0ea5e9", "🤖 LLM: Qwen2.5 — контекст речи + резюме"),
     ]
-    if use_clip: chips.append(("#8b5cf6", "🧠 Сцены: CLIP zero-shot"))
-    if use_ocr:  chips.append(("#06b6d4", "📝 Текст: EasyOCR — субтитры и надписи"))
     chips.append(("#6366f1", "⚡ Слияние: Temporal NMS — убирает дубли"))
     return (
         '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px">'
@@ -401,7 +402,7 @@ def _tech_html(use_ocr: bool, use_clip: bool, whisper_model: str) -> str:
 # Шаг 3: в конце показывает результаты, прячет прогресс
 
 async def analyze_url(
-    url: str, video_file, quality: str, whisper_model: str, use_ocr: bool, use_clip: bool
+    url: str, video_file, quality: str, preset: str
 ):
     # Outputs:
     # 0  progress_out    gr.HTML
@@ -444,7 +445,7 @@ async def analyze_url(
         return
 
     # ── Инициализация ────────────────────────────────────────────────────────
-    eta_total = _estimate_eta(use_ocr, use_clip, whisper_model)
+    eta_total = _estimate_eta(preset)
     t_start = time.time()
     queue: asyncio.Queue = asyncio.Queue()
 
@@ -453,7 +454,7 @@ async def analyze_url(
 
     # Первый yield: сразу показываем дерево, прячем результаты
     yield _emit(
-        _progress_html(0.02, "Начинаю анализ...", t_start, eta_total, use_clip, use_ocr),
+        _progress_html(0.02, "Начинаю анализ...", t_start, eta_total),
         summary=gr.update(visible=False, value=""),
         timeline=gr.update(visible=False, value=""),
         gallery_row=gr.update(visible=False),
@@ -464,7 +465,7 @@ async def analyze_url(
     )
 
     # ── Запуск анализа в фоне ────────────────────────────────────────────────
-    analyzer = _make_analyzer(whisper_model, use_ocr, use_clip)
+    analyzer = _make_analyzer(preset)
     task = asyncio.create_task(
         analyzer.run(source, quality=quality, on_progress=on_progress)
     )
@@ -483,7 +484,7 @@ async def analyze_url(
             phrase = _rand_phrase(frac)
 
         yield _emit(
-            _progress_html(frac, phrase, t_start, eta_total, use_clip, use_ocr)
+            _progress_html(frac, phrase, t_start, eta_total)
         )
 
     # ── Получаем результат ───────────────────────────────────────────────────
@@ -513,7 +514,7 @@ async def analyze_url(
         gallery_row=gr.update(visible=True),
         gallery=gallery_items,
         clips=clip_paths,
-        tech=_tech_html(use_ocr, use_clip, whisper_model),
+        tech=_tech_html(preset),
         json_acc=gr.update(visible=True),
         json=report.model_dump(mode="json"),
     )
@@ -586,23 +587,16 @@ def build_ui() -> gr.Blocks:
             )
 
         with gr.Row():
-            whisper_dd = gr.Dropdown(
+            preset_dd = gr.Dropdown(
                 choices=[
-                    ("Tiny — очень быстро", "tiny"),
-                    ("Base — скорость и точность", "base"),
-                    ("Small — высокая точность", "small"),
-                    ("Medium — максимум", "medium"),
+                    ("⚡ Fast — быстро (YOLOv11s · SigLIP2/224 · Whisper small)", "fast"),
+                    ("⚖ Balanced — баланс (YOLOv11m · SigLIP2/384 · Whisper turbo)", "balanced"),
+                    ("🎯 Accurate — максимум (YOLOv11x · SigLIP2 so400m · Whisper large-v3)", "accurate"),
                 ],
-                value="tiny", label="Распознавание речи (Whisper)",
-                info="Больше модель → точнее речь, но дольше", scale=3,
-            )
-            ocr_cb = gr.Checkbox(
-                value=False, label="Текст в кадре (OCR)",
-                info="Медленно — 2-4 сек/кадр. Субтитры и баннеры.", scale=2,
-            )
-            clip_cb = gr.Checkbox(
-                value=True, label="Анализ сцен (CLIP)",
-                info="Понимает контекст всего кадра. Умеренно.", scale=2,
+                value="balanced",
+                label="Пресет точности",
+                info="Один выбор задаёт размеры всех моделей. Каналы (речь, объекты, "
+                     "сцена, NSFW, действия, OCR, LLM) включаются автоматически.",
             )
 
         # ── Кнопки ───────────────────────────────────────────────────────────
@@ -650,7 +644,7 @@ def build_ui() -> gr.Blocks:
         # ── События ──────────────────────────────────────────────────────────
         run_event = analyze_btn.click(
             fn=analyze_url,
-            inputs=[url_input, video_file, quality_dd, whisper_dd, ocr_cb, clip_cb],
+            inputs=[url_input, video_file, quality_dd, preset_dd],
             outputs=[
                 progress_out,   # 0
                 summary_out,    # 1
