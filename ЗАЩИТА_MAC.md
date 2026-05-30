@@ -5,22 +5,20 @@
 
 ---
 
-## ⏱ СЕГОДНЯ ВЕЧЕРОМ (один раз, ~20–30 мин — модели качаются заранее!)
+## ⏱ СЕГОДНЯ ВЕЧЕРОМ (одна команда, ~20–40 мин, интернет нужен)
 
-Открой **Терминал** на Маке и выполни:
+Открой **Терминал** на Маке и вставь **одну строку**:
 
 ```bash
-# Если папка уже есть — обновим, иначе склонируем
-[ -d ~/cv-video-analytics ] && git -C ~/cv-video-analytics pull || git clone https://github.com/flipiwolker-alt/cv-video-analytics.git ~/cv-video-analytics
-cd ~/cv-video-analytics
-bash scripts/setup_mac.sh
+[ -d ~/cv-video-analytics ] && git -C ~/cv-video-analytics pull || git clone https://github.com/flipiwolker-alt/cv-video-analytics.git ~/cv-video-analytics ; cd ~/cv-video-analytics && bash scripts/setup_mac.sh
 ```
 
-Скрипт поставит ffmpeg + Ollama + модель `qwen2.5:7b` + Python-зависимости
-(torch с MPS встанет сам) и запустит интерфейс.
-
-Когда откроется интерфейс — **прогони один короткий ролик (30–60 сек)** через
-загрузку файла. Это докачает CV-модели (~3–4 ГБ) и закэширует их. Готово.
+Скрипт сам сделает всё:
+- поставит ffmpeg, Ollama, Python 3.12
+- скачает LLM-модель `qwen2.5:7b` (~4.7 ГБ)
+- установит Python-зависимости (torch с MPS)
+- **скачает все CV-модели заранее** (~3–4 ГБ) — чтобы на защите не ждать
+- запустит интерфейс на http://localhost:7860
 
 > Если `setup_mac.sh` где-то споткнётся — пришли мне текст ошибки.
 
@@ -29,10 +27,7 @@ bash scripts/setup_mac.sh
 ## 🎬 НА ЗАЩИТЕ (запуск за 30 секунд)
 
 ```bash
-cd ~/cv-video-analytics
-source .venv/bin/activate
-ollama serve >/dev/null 2>&1 &      # поднять LLM, если не запущен
-python run_ui.py
+cd ~/cv-video-analytics && ollama serve >/dev/null 2>&1 & source .venv/bin/activate && python run_ui.py
 ```
 
 → открой в браузере **http://localhost:7860**
