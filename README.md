@@ -247,58 +247,78 @@ ffmpeg склеивает видео- и аудиодорожки в едины�
 
 ---
 
-### Установка (Windows / macOS / Linux — одинаково)
+### Установка
 
+**macOS (Apple Silicon — рекомендуется):**
+```bash
+# Одна команда — клонирует, ставит зависимости, скачивает модели и запускает UI
+[ -d ~/cv-video-analytics ] && git -C ~/cv-video-analytics pull || git clone https://github.com/flipiwolker-alt/cv-video-analytics.git ~/cv-video-analytics ; cd ~/cv-video-analytics && bash scripts/setup_mac.sh
+```
+
+**Windows / Linux (вручную):**
 ```bash
 # 1. Клонировать репозиторий
 git clone https://github.com/flipiwolker-alt/cv-video-analytics.git
 cd cv-video-analytics
 
-# 2. Создать виртуальное окружение
+# 2. Создать и активировать виртуальное окружение
 python3 -m venv .venv
+source .venv/bin/activate          # macOS / Linux
+# .venv\Scripts\activate           # Windows
 
-# 3. Активировать окружение
-#    Windows:
-.venv\Scripts\activate
-#    macOS / Linux:
-source .venv/bin/activate
-
-# 4. Установить зависимости
+# 3. Установить зависимости
 pip install -r requirements.txt
-```
 
-> Модели (Whisper ~145 MB, YOLOv8n ~6 MB, CLIP ~150 MB) скачиваются **автоматически** при первом запуске.
+# 4. Скачать модели заранее (~3–4 ГБ, один раз)
+python scripts/download_models.py --preset balanced
+
+# 5. Установить и запустить Ollama (нужен для LLM-слоя)
+# https://ollama.com → скачать и установить
+ollama pull qwen2.5:7b
+```
 
 ---
 
 ### Запуск Gradio UI
 
-```bash
-# Локально — открыть http://localhost:7860
-python run_ui.py
+> ⚠️ **Ollama должна быть запущена** — иначе LLM-анализ не сработает!
 
-# С публичным URL (72 часа, не нужен сервер)
+**Шаг 1 — запусти Ollama** (отдельный терминал, держи открытым):
+```bash
+ollama serve
+```
+
+**Шаг 2 — запусти интерфейс** (новый терминал):
+```bash
+cd ~/cv-video-analytics
+source .venv/bin/activate
+python run_ui.py
+```
+
+Открой в браузере: **http://localhost:7860**
+
+```bash
+# Публичный URL на 72 часа (чтобы показать с другого устройства)
 python run_ui.py --share
 
-# На другом порту
+# Другой порт
 python run_ui.py --port 8080
 ```
-
-При запуске с `--share` в консоли появится ссылка вида:
-```
-Running on public URL: https://xxxxxxxxxxxx.gradio.live
-```
-Эту ссылку можно открыть на **любом устройстве** без VPN.
 
 ---
 
 ### Запуск REST API (FastAPI)
 
 ```bash
-# Запустить сервер
+# Терминал 1 — Ollama (если ещё не запущена)
+ollama serve
+
+# Терминал 2 — API сервер
+cd ~/cv-video-analytics
+source .venv/bin/activate
 python run_api.py
 
-# Интерактивная документация: http://localhost:8000/docs
+# Документация: http://localhost:8000/docs
 ```
 
 #### Синхронный запрос по YouTube-ссылке (POST → сразу JSON)
