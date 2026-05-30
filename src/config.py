@@ -24,8 +24,9 @@ def _resolve_models_dir() -> Path:
     candidates = []
     if "CV_MODELS_DIR" in os.environ:
         candidates.append(Path(os.environ["CV_MODELS_DIR"]))
+    if os.name == "nt":  # Windows only
+        candidates += [Path(r"E:\cv_models"), Path(r"C:\Users\User\cv_models")]
     candidates += [
-        Path(r"E:\cv_models"), Path(r"C:\Users\User\cv_models"),  # Windows
         Path.home() / ".cache" / "cv_models",                      # Mac/Linux/Kaggle
         ROOT / "models",                                           # фолбэк в проекте
     ]
