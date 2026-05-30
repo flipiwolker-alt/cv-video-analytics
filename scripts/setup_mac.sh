@@ -33,8 +33,8 @@ pip install -r requirements.txt
 echo "==> 5/7  Проверка GPU (MPS)"
 python -c "import torch; print('  MPS доступен:', torch.backends.mps.is_available())"
 
-echo "==> 6/7  Предзагрузка CV-моделей (~3–4 ГБ, один раз, чтобы на защите не ждать)"
-python scripts/download_models.py --preset balanced
+echo "==> 6/7  Предзагрузка ВСЕХ CV-моделей (~8–10 ГБ, один раз, чтобы на защите не ждать)"
+python scripts/download_models.py
 
 echo "==> 7/7  Запуск веб-интерфейса"
 echo "    Открой в браузере:  http://localhost:7860"
