@@ -11,10 +11,13 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
+import tempfile
 import uuid
 from datetime import datetime
+from pathlib import Path
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -130,6 +133,45 @@ async def analyze_sync(req: SyncRequest):
     except Exception as exc:
         raise HTTPException(500, detail=str(exc))
     return report.model_dump(mode="json")
+
+
+# ── Загрузка файла (multipart) — синхронно ────────────────────────────────────
+
+@app.post("/analyze/upload", summary="Загрузить видеофайл и сразу получить результат")
+async def analyze_upload(
+    file: UploadFile = File(..., description="Видеофайл (mp4/mkv/mov/webm)"),
+    preset: str = Form("balanced"),       # fast | balanced | accurate
+    use_clip: bool = Form(True),
+    use_ocr: bool = Form(True),
+    use_nsfw: bool = Form(True),
+    use_action: bool = Form(True),
+    use_llm: bool = Form(True),
+    use_llm_vision: bool = Form(False),
+    whisper_model: str | None = Form(None),
+):
+    """
+    Принимает видеофайл напрямую (multipart/form-data), анализирует локально
+    (без интернета/yt-dlp) и возвращает JSON-отчёт. Удобно для Postman:
+    form-data → ключ `file` тип File + при желании текстовые поля (preset и пр.).
+
+    Блокирует запрос до завершения (обычно 1-5 минут).
+    """
+    suffix = Path(file.filename or "video.mp4").suffix or ".mp4"
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    try:
+        with tmp:
+            shutil.copyfileobj(file.file, tmp)
+        analyzer = VideoAnalyzer(
+            dummy=False, offline=False, preset=preset, whisper_model=whisper_model,
+            use_clip=use_clip, use_ocr=use_ocr, use_nsfw=use_nsfw,
+            use_action=use_action, use_llm=use_llm, use_llm_vision=use_llm_vision,
+        )
+        report, _media = await analyzer.run(tmp.name, quality="720p")
+        return report.model_dump(mode="json")
+    except Exception as exc:
+        raise HTTPException(500, detail=str(exc))
+    finally:
+        Path(tmp.name).unlink(missing_ok=True)
 
 
 # ── Background worker ─────────────────────────────────────────────────────────
