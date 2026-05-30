@@ -90,13 +90,34 @@ python run_api.py
 # Интерактивная документация: http://localhost:8000/docs
 ```
 
-#### Синхронный запрос (POST → сразу JSON)
+#### Синхронный запрос по YouTube-ссылке (POST → сразу JSON)
 
 ```bash
 curl -X POST http://localhost:8000/analyze/sync \
      -H "Content-Type: application/json" \
      -d '{"url": "https://www.youtube.com/watch?v=XXXX"}'
 ```
+
+#### Загрузка видеофайла (multipart, работает офлайн — без yt-dlp)
+
+Удобно для Postman: метод `POST`, Body → **form-data**, ключ `file` тип **File**,
+остальные поля (`preset`, `use_*`) — тип **Text**.
+
+```bash
+# Полный анализ загруженного файла
+curl -X POST http://localhost:8000/analyze/upload \
+     -F "file=@/path/to/video.mp4;type=video/mp4" \
+     -F "preset=balanced" \
+     -F "use_llm=true"
+
+# Быстрый прогон (без тяжёлых каналов)
+curl -X POST http://localhost:8000/analyze/upload \
+     -F "file=@/path/to/video.mp4;type=video/mp4" \
+     -F "preset=fast" -F "use_ocr=false" -F "use_action=false"
+```
+
+Поля form-data: `file` (обязательно), `preset` (`fast`/`balanced`/`accurate`),
+`use_clip`, `use_ocr`, `use_nsfw`, `use_action`, `use_llm`, `use_llm_vision`, `whisper_model`.
 
 Параметры запроса:
 
@@ -165,7 +186,7 @@ curl -X POST http://localhost:8000/analyze/sync \
 просто продолжает работать на алгоритмах (graceful degrade).
 
 Где применяется:
-1. **Контекстная классификация речи** — LLM читает транскрипт и размечает 9 категорий с учётом смысла (точнее keyword-regex для экстремизма/ЛГБТ/угроз).
+1. **Контекстная классификация речи** — LLM читает транскрипт и размечает 12 категорий с учётом смысла (точнее keyword-regex для экстремизма/ЛГБТ/угроз).
 2. **Резюме отчёта** — краткое человекочитаемое саммари (`llm_summary` в JSON).
 3. **Vision-проверка кадров** (`use_llm_vision`) — подтверждает пограничные детекции YOLO/CLIP, срезает ложняки.
 
@@ -233,7 +254,7 @@ src/
 ├── pipeline.py    ← VideoAnalyzer — параллельный запуск всех этапов
 ├── main.py        ← FastAPI: /analyze, /analyze/sync, /status, /result
 ├── schemas.py     ← Pydantic-схемы (TimeBasedReport, Detection, ...)
-├── subclass_info.py ← Словарь 9 категорий (цвета, иконки, severity)
+├── subclass_info.py ← Словарь 12 категорий (цвета, иконки, severity)
 ├── pz1_keyframes.py ← Извлечение ключевых кадров (scene detection)
 ├── pz3_ocr.py     ← OCR через EasyOCR
 ├── pz4_audio.py   ← Whisper + keyword-классификация
