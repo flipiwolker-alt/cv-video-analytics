@@ -237,10 +237,28 @@ class VideoAnalyzer:
 
     # ── Download ──────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _probe(path: Path):
+        """Читает fps/кадры/длительность локального видеофайла через OpenCV."""
+        import cv2
+        cap = cv2.VideoCapture(str(path))
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        duration = frame_count / fps if fps else 0.0
+        cap.release()
+        return duration, fps, frame_count
+
     async def _download(self, url: str, tmp: Path, quality: str):
         if self.offline:
             await asyncio.sleep(0.3)
             return tmp / "video.mp4", 180.0, 30.0, 5400
+
+        # Локальный файл (загружен через UI или передан путём) — без yt-dlp
+        local = url[7:] if url.startswith("file://") else url
+        if local and Path(local).exists() and Path(local).is_file():
+            p = Path(local)
+            duration, fps, frame_count = self._probe(p)
+            return p, duration, fps, frame_count
 
         out = tmp / "video.mp4"
         h = quality.rstrip("p")

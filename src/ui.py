@@ -401,7 +401,7 @@ def _tech_html(use_ocr: bool, use_clip: bool, whisper_model: str) -> str:
 # Шаг 3: в конце показывает результаты, прячет прогресс
 
 async def analyze_url(
-    url: str, quality: str, whisper_model: str, use_ocr: bool, use_clip: bool
+    url: str, video_file, quality: str, whisper_model: str, use_ocr: bool, use_clip: bool
 ):
     # Outputs:
     # 0  progress_out    gr.HTML
@@ -428,12 +428,19 @@ async def analyze_url(
             kw.get("json",       gr.update()),
         )
 
+    # ── Источник: загруженный файл (приоритет, работает офлайн) ИЛИ YouTube ───
+    import os as _os
+    source = video_file if isinstance(video_file, str) and video_file else ""
+    if not source:
+        source = (url or "").strip()
+
     # ── Валидация ────────────────────────────────────────────────────────────
-    if not url or not url.strip():
-        yield _emit(_error_html("Введите ссылку на YouTube"))
+    if not source:
+        yield _emit(_error_html("Загрузите видеофайл или введите ссылку на YouTube"))
         return
-    if "youtu" not in url:
-        yield _emit(_error_html("Нужна ссылка на YouTube (youtube.com или youtu.be)"))
+    is_local = _os.path.exists(source)
+    if not is_local and "youtu" not in source:
+        yield _emit(_error_html("Нужен видеофайл или ссылка на YouTube (youtube.com / youtu.be)"))
         return
 
     # ── Инициализация ────────────────────────────────────────────────────────
@@ -459,7 +466,7 @@ async def analyze_url(
     # ── Запуск анализа в фоне ────────────────────────────────────────────────
     analyzer = _make_analyzer(whisper_model, use_ocr, use_clip)
     task = asyncio.create_task(
-        analyzer.run(url, quality=quality, on_progress=on_progress)
+        analyzer.run(source, quality=quality, on_progress=on_progress)
     )
 
     frac = 0.02
@@ -558,8 +565,13 @@ def build_ui() -> gr.Blocks:
 
         # ── Ввод ─────────────────────────────────────────────────────────────
         with gr.Row():
+            video_file = gr.Video(
+                label="📁 Загрузить видеофайл (приоритет, работает офлайн)",
+            )
+
+        with gr.Row():
             url_input = gr.Textbox(
-                label="Ссылка на YouTube",
+                label="…или ссылка на YouTube",
                 placeholder="https://www.youtube.com/watch?v=...",
                 scale=5,
             )
@@ -638,7 +650,7 @@ def build_ui() -> gr.Blocks:
         # ── События ──────────────────────────────────────────────────────────
         run_event = analyze_btn.click(
             fn=analyze_url,
-            inputs=[url_input, quality_dd, whisper_dd, ocr_cb, clip_cb],
+            inputs=[url_input, video_file, quality_dd, whisper_dd, ocr_cb, clip_cb],
             outputs=[
                 progress_out,   # 0
                 summary_out,    # 1
