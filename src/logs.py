@@ -25,11 +25,23 @@ _LOG_DIR = _ROOT / "outputs" / "logs"
 _CONFIGURED = False
 
 
+def _utf8_stdout() -> None:
+    """Windows-консоль часто в cp1251 → кириллица в логах превращается в мусор.
+    Принудительно переключаем stdout/stderr на UTF-8 (Python 3.7+)."""
+    for stream in ("stdout", "stderr"):
+        s = getattr(__import__("sys"), stream, None)
+        try:
+            s.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError):
+            pass
+
+
 def _configure() -> None:
     global _CONFIGURED
     if _CONFIGURED:
         return
     _CONFIGURED = True
+    _utf8_stdout()
 
     fmt = logging.Formatter(
         "%(asctime)s | %(levelname)-7s | %(name)-22s | %(message)s",

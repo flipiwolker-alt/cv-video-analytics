@@ -19,6 +19,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import uvicorn
 
+from src.logs import _utf8_stdout
+_utf8_stdout()
 from src.device import banner
 print(banner())
 
