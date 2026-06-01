@@ -230,6 +230,8 @@ curl http://localhost:8000/result/abc123
 {
   "report_type": "TIME_BASED_REPORT",
   "preset": "balanced",
+  "source": "https://www.youtube.com/watch?v=XXXX",
+  "source_dir": null,
   "source_info": { "frameCount": 5400, "fps": 30.0, "video_duration_formatted": "0:03:00" },
   "detections": [
     {
@@ -346,7 +348,7 @@ E:\cv-venv\Scripts\python.exe scripts\benchmark.py --preset balanced `
 12:41:20 | INFO  | cv.pipeline | Отчёт сохранён: outputs\reports\20260601_124120_balanced_XXXX.json
 ```
 
-**Сохранённые отчёты.** Каждый выходной JSON, который сформировал анализ, автоматически сохраняется в `outputs/reports/` с именем `<дата>_<пресет>_<источник>.json` — независимо от того, пришёл запрос из UI, `/analyze/sync`, `/analyze/upload` или асинхронного режима. Историю прогонов можно открыть и сравнить в любой момент.
+**Сохранённые отчёты.** Каждый выходной JSON, который сформировал анализ, автоматически сохраняется в `outputs/reports/` с именем `<дата>_<пресет>_<источник>.json` — независимо от того, пришёл запрос из UI, `/analyze/sync`, `/analyze/upload` или асинхронного режима. Для однозначной идентификации в самом JSON есть поля `source` (ссылка на YouTube либо абсолютный путь к файлу) и `source_dir` (папка, где лежит ролик, для локальных файлов). Историю прогонов можно открыть и сравнить в любой момент.
 
 ---
 

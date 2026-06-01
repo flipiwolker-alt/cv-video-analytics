@@ -60,6 +60,8 @@ class TopSourceInfo(BaseModel):
 
 class TimeBasedReport(BaseModel):
     report_type: Literal["TIME_BASED_REPORT"] = "TIME_BASED_REPORT"
+    source: Optional[str] = None          # ссылка на YouTube или путь к локальному файлу
+    source_dir: Optional[str] = None      # папка, где лежит ролик (для локальных файлов)
     source_info: TopSourceInfo
     detections: list[Detection]
     sourceInfo: SourceInfo

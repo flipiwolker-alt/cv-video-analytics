@@ -266,7 +266,22 @@ class VideoAnalyzer:
         processing_time = time.time() - t0
         now = datetime.now().isoformat()
 
+        # Источник для идентификации отчёта: YouTube-ссылка как есть, либо
+        # абсолютный путь к локальному файлу + папка, где он лежит.
+        source = url
+        source_dir = None
+        local = url[7:] if url.startswith("file://") else url
+        try:
+            p = Path(local)
+            if p.exists() and p.is_file():
+                source = str(p.resolve())
+                source_dir = str(p.resolve().parent)
+        except (OSError, ValueError):
+            pass
+
         report = TimeBasedReport(
+            source=source,
+            source_dir=source_dir,
             preset=self.preset.name,
             llm_summary=llm_summary,
             source_info=TopSourceInfo(
