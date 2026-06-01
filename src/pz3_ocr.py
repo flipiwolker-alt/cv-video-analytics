@@ -27,11 +27,12 @@ def _get_ocr():
     with _ocr_lock:
         if _ocr_model is None:
             import easyocr
-            from .config import MODELS_DIR
+            from .config import MODELS_DIR, OFFLINE
             model_dir = str(MODELS_DIR / "easyocr")
             globals()["_ocr_model"] = easyocr.Reader(
                 ["ru", "en"], gpu=ON_CUDA, verbose=False,  # easyocr.gpu = только CUDA
                 model_storage_directory=model_dir,
+                download_enabled=not OFFLINE,  # offline: не лезть в сеть за весами
             )
     return _ocr_model
 

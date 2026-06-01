@@ -33,6 +33,7 @@ from .pz6_clip import clip_keyframes
 from .pz7_nsfw import nsfw_keyframes
 from .pz8_action import xclip_action
 from .presets import get_preset, DEFAULT_PRESET
+from .logs import get_logger, stage
 
 from .schemas import (
     Detection,
@@ -44,6 +45,8 @@ from .schemas import (
 )
 
 ProgressCb = Callable[[float, str], Awaitable[None]]
+
+log = get_logger(__name__)
 
 _SUBCLASS_COLORS = {
     "alcohol":   (245, 158, 11),
@@ -168,18 +171,25 @@ class VideoAnalyzer:
         progress = on_progress or _noop
         t0 = time.time()
         self.clips_dir.mkdir(parents=True, exist_ok=True)
+        log.info("═" * 60)
+        log.info("Анализ: %s | пресет=%s | каналы: clip=%s ocr=%s nsfw=%s action=%s llm=%s",
+                 url, self.preset.name, self.use_clip, self.use_ocr,
+                 self.use_nsfw, self.use_action, self.use_llm)
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
 
             # ── Download ──────────────────────────────────────────────────
             await progress(0.05, "Скачиваю видео с YouTube...")
-            video_path, duration_sec, fps, frame_count = await self._download(
-                url, tmp_path, quality
-            )
+            with stage(log, "download", "скачивание/чтение видео"):
+                video_path, duration_sec, fps, frame_count = await self._download(
+                    url, tmp_path, quality
+                )
+            log.info("Видео: %.0fс, %.1f fps, %d кадров", duration_sec, fps, frame_count)
 
             # ── Analysis (параллельно) ────────────────────────────────────
             await progress(0.20, "Извлекаю ключевые кадры...")
+            log.info("▶ Параллельный анализ: аудио-ветка + видео-ветка")
             audio_task = asyncio.create_task(
                 self._analyze_audio(video_path, fps, duration_sec, progress)
             )
@@ -187,28 +197,39 @@ class VideoAnalyzer:
                 self._analyze_video(video_path, fps, duration_sec, progress)
             )
             audio_dets, video_dets = await asyncio.gather(audio_task, video_task)
+            log.info("Сырых детекций: аудио=%d, видео=%d", len(audio_dets), len(video_dets))
 
             # ── Post-processing ───────────────────────────────────────────
             await progress(0.85, "Свожу результаты воедино...")
-            detections = self._postprocess(audio_dets + video_dets, fps=fps)
+            with stage(log, "fusion", "фьюзия + temporal NMS"):
+                detections = self._postprocess(audio_dets + video_dets, fps=fps)
+            log.info("После фьюзии: %d событий", len(detections))
 
             # ── Извлечение медиа ──────────────────────────────────────────
             await progress(0.92, "Извлекаю кадры и клипы...")
-            media = await self._extract_media(video_path, detections, fps, duration_sec)
+            with stage(log, "media", "кадры + нарезка клипов"):
+                media = await self._extract_media(video_path, detections, fps, duration_sec)
 
             # ── LLM vision-проверка пограничных видео-детекций (опц.) ──────
             if self.use_llm and self.use_llm_vision and not self.offline:
                 await progress(0.95, "LLM-проверка кадров...")
-                media = await self._llm_verify(media)
+                with stage(log, "llm-vision", "проверка пограничных кадров"):
+                    media = await self._llm_verify(media)
                 detections = [m.detection for m in media]
 
             # ── LLM-резюме отчёта (опц.) ───────────────────────────────────
             llm_summary = None
             if self.use_llm and not self.offline:
                 await progress(0.98, "LLM-резюме...")
-                llm_summary = await self._llm_summary(detections)
+                with stage(log, "llm-summary", "резюме на русском"):
+                    llm_summary = await self._llm_summary(detections)
 
             await progress(1.0, "Готово.")
+
+        # Освобождаем VRAM после прогона (важно на 8 ГБ — модели кэшируются,
+        # но промежуточные тензоры/фрагментацию чистим между анализами).
+        from .device import empty_cache
+        empty_cache()
 
         processing_time = time.time() - t0
         now = datetime.now().isoformat()
@@ -233,7 +254,26 @@ class VideoAnalyzer:
                 analysis_timestamp=now,
             ),
         )
+
+        log.info("ИТОГ: %d событий | обработка %.1fс | efficiency %.2f",
+                 len(detections), processing_time,
+                 processing_time / max(duration_sec, 1e-6))
+        self._save_report(report, url)
         return report, media
+
+    def _save_report(self, report: TimeBasedReport, url: str) -> None:
+        """Сохраняет каждый выходной JSON-отчёт в outputs/reports/ (для истории)."""
+        try:
+            reports_dir = Path("outputs") / "reports"
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            # короткий идентификатор источника (yt id или имя файла)
+            tag = "".join(c for c in Path(url).name[-20:] if c.isalnum()) or "video"
+            path = reports_dir / f"{ts}_{report.preset}_{tag}.json"
+            path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+            log.info("Отчёт сохранён: %s", path)
+        except Exception as exc:
+            log.warning("Не удалось сохранить отчёт: %s", exc)
 
     # ── Download ──────────────────────────────────────────────────────────────
 
@@ -293,16 +333,18 @@ class VideoAnalyzer:
 
         loop = asyncio.get_event_loop()
 
-        # PZ1 — keyframes (должен быть первым, остальные зависят от него)
+        # keyframes (должны быть первыми, остальные каналы зависят от них)
         preset = self.preset
-        keyframes = await loop.run_in_executor(
-            self._pool,
-            lambda: extract_keyframes(
-                video_path,
-                stride_sec=preset.keyframe_stride_sec,
-                sharp_window=preset.sharp_window,
-            ),
-        )
+        with stage(log, "keyframes", "извлечение ключевых кадров"):
+            keyframes = await loop.run_in_executor(
+                self._pool,
+                lambda: extract_keyframes(
+                    video_path,
+                    stride_sec=preset.keyframe_stride_sec,
+                    sharp_window=preset.sharp_window,
+                ),
+            )
+        log.info("Ключевых кадров: %d", len(keyframes))
         await progress(0.30, f"Кадры готовы: {len(keyframes)} шт.")
 
         # ── Параллельный запуск PZ3 + PZ5 + PZ6 ─────────────────────────────
@@ -320,13 +362,25 @@ class VideoAnalyzer:
 
         await progress(0.33, f"Параллельный анализ: {', '.join(stage_map.keys())}...")
 
+        _names = {"yolo": "объекты (YOLO+World)", "ocr": "текст в кадре (OCR)",
+                  "clip": "сцена (SigLIP)", "nsfw": "NSFW (Falconsai)",
+                  "action": "действия (X-CLIP)"}
+
         async def _run_stage(sid: str, fn) -> list:
+            ts = time.time()
+            log.info("▶ [%s] %s — старт", sid, _names.get(sid, sid))
             try:
-                return await asyncio.wait_for(
+                dets = await asyncio.wait_for(
                     loop.run_in_executor(self._pool, fn),
                     timeout=self.stage_timeout,
                 )
-            except (asyncio.TimeoutError, Exception):
+                log.info("✔ [%s] — %d детекций за %.1fс", sid, len(dets), time.time() - ts)
+                return dets
+            except asyncio.TimeoutError:
+                log.warning("✖ [%s] — таймаут (%.0fс), пропускаю", sid, self.stage_timeout)
+                return []
+            except Exception as exc:
+                log.warning("✖ [%s] — ошибка: %s", sid, exc)
                 return []
 
         results = await asyncio.gather(
@@ -348,8 +402,10 @@ class VideoAnalyzer:
             await asyncio.sleep(0.5)
             return self._mock_audio_detections(fps, duration)
 
-        # PZ4: реальный Whisper (+ опц. LLM-классификация транскрипта)
+        # Аудио: Whisper → транскрипт → словарь + (опц.) LLM-классификация
         loop = asyncio.get_event_loop()
+        _ts = time.time()
+        log.info("▶ [audio] речь: Whisper + классификация — старт")
         detections = await loop.run_in_executor(
             None,
             lambda: _run_pz4(
@@ -359,6 +415,7 @@ class VideoAnalyzer:
                 use_llm=self.use_llm,
             ),
         )
+        log.info("✔ [audio] — %d детекций за %.1fс", len(detections), time.time() - _ts)
         await progress(0.65, f"Аудио: {len(detections)} событий")
         return detections
 

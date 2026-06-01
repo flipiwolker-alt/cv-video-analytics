@@ -94,13 +94,23 @@ _world_models: dict[str, object] = {}
 _lock = threading.Lock()
 
 
+def _resolve_weights(model_name: str) -> str:
+    """Ищет локальные веса (корень проекта, затем MODELS_DIR/ultralytics).
+    Если найдены — возвращает путь (ultralytics НЕ качает). Иначе — голое имя
+    (ultralytics скачает один раз; в offline это уже не понадобится)."""
+    from .config import ULTRALYTICS_WEIGHTS_DIRS
+    for d in ULTRALYTICS_WEIGHTS_DIRS:
+        p = d / model_name
+        if p.exists():
+            return str(p)
+    return model_name
+
+
 def _get_yolo(model_name: str):
     with _lock:
         if model_name not in _models:
             from ultralytics import YOLO
-            from .config import MODELS_DIR
-            local = MODELS_DIR / "ultralytics" / model_name
-            _models[model_name] = YOLO(str(local) if local.exists() else model_name)
+            _models[model_name] = YOLO(_resolve_weights(model_name))
     return _models[model_name]
 
 
@@ -108,9 +118,7 @@ def _get_yolo_world(model_name: str):
     with _lock:
         if model_name not in _world_models:
             from ultralytics import YOLOWorld
-            from .config import MODELS_DIR
-            local = MODELS_DIR / "ultralytics" / model_name
-            m = YOLOWorld(str(local) if local.exists() else model_name)
+            m = YOLOWorld(_resolve_weights(model_name))
             m.set_classes(_WORLD_PROMPTS)
             _world_models[model_name] = m
     return _world_models[model_name]

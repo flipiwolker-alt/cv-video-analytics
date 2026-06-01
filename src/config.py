@@ -57,6 +57,28 @@ for _sub in ["huggingface/hub", "ultralytics", "easyocr", "whisper"]:
     except (PermissionError, OSError):
         pass
 
+# ── Offline-режим: модели качаются ОДИН раз, потом грузятся из кэша ────────────
+# Скрипт scripts/download_models.py скачивает всё и ставит маркер .models_ready.
+# Если маркер есть — HuggingFace/transformers больше НЕ ходят в хаб на проверку
+# ревизий: анализ стартует мгновенно из локального кэша, без сети.
+# Принудительно: CV_MODELS_OFFLINE=1 (всегда offline) / =0 (всегда online).
+MODELS_READY_FLAG = MODELS_DIR / ".models_ready"
+
+def _offline_mode() -> bool:
+    forced = os.environ.get("CV_MODELS_OFFLINE")
+    if forced is not None:
+        return forced.strip() not in ("0", "false", "no", "")
+    return MODELS_READY_FLAG.exists()
+
+OFFLINE = _offline_mode()
+if OFFLINE:
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+    # ultralytics не лезет в сеть, если веса найдены локально (см. pz5_yolo)
+
+# Пути к локальным весам YOLO (корень проекта) — чтобы ultralytics не качал заново
+ULTRALYTICS_WEIGHTS_DIRS = [ROOT, MODELS_DIR / "ultralytics"]
+
 FRAMES_DIR          = ROOT / "outputs" / "frames"
 OCR_RESULTS_DIR     = ROOT / "outputs" / "ocr_results"
 DETECTIONS_DIR      = ROOT / "outputs" / "detections"

@@ -14,7 +14,12 @@ CPU, что даже последовательное выполнение кр�
 from __future__ import annotations
 
 import contextlib
+import os
 import threading
+
+# 8 ГБ VRAM — память делят 6 моделей. expandable_segments снижает фрагментацию
+# и риск OOM при параллельных стадиях. Ставим ДО импорта torch.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 try:
     import torch
@@ -46,3 +51,37 @@ _GPU_LOCK = threading.Lock()
 def gpu_guard():
     """Контекст-менеджер: на GPU сериализует доступ, на CPU — пустышка."""
     return _GPU_LOCK if ON_GPU else contextlib.nullcontext()
+
+
+def empty_cache() -> None:
+    """Освобождает неиспользуемую VRAM (вызывать между тяжёлыми прогонами)."""
+    if _CUDA:
+        try:
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+
+def describe() -> str:
+    """Человекочитаемая строка про выбранное устройство (для баннера при старте)."""
+    if _CUDA:
+        try:
+            name = torch.cuda.get_device_name(0)
+            total = torch.cuda.get_device_properties(0).total_memory / 1024**3
+            return f"GPU (CUDA): {name}, {total:.0f} ГБ VRAM"
+        except Exception:
+            return "GPU (CUDA)"
+    if _MPS:
+        return "GPU (Apple MPS)"
+    return "CPU (CUDA недоступна — будет медленно)"
+
+
+def banner() -> str:
+    """Баннер устройства + режима моделей для печати при запуске UI/API."""
+    try:
+        from .config import OFFLINE, MODELS_DIR
+        mode = "offline (из кэша, без сети)" if OFFLINE else "online (докачка при отсутствии)"
+        return (f"[cv-video-analytics] Вычисления: {describe()}\n"
+                f"[cv-video-analytics] Модели: {mode} — {MODELS_DIR}")
+    except Exception:
+        return f"[cv-video-analytics] Вычисления: {describe()}"

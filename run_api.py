@@ -19,6 +19,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import uvicorn
 
+from src.device import banner
+print(banner())
+
 parser = argparse.ArgumentParser()
 parser.add_argument("--host", default="0.0.0.0")
 parser.add_argument("--port", type=int, default=8000)

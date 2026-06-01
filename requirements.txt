@@ -1,6 +1,9 @@
 # ── Core CV ───────────────────────────────────────────────────────────────────
 opencv-python>=4.8.0
-numpy>=1.24.0,<2.0        # easyocr/whisper ещё не дружат с numpy 2.x
+# Python 3.14: только numpy 2.x (колёс <2.0 под cp314 нет). Современные
+# easyocr/faster-whisper/transformers с numpy 2.x совместимы.
+numpy>=2.0.0; python_version >= "3.13"
+numpy>=1.24.0,<2.0; python_version < "3.13"
 Pillow>=10.0.0
 matplotlib>=3.7.0
 
