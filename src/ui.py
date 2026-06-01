@@ -6,10 +6,8 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import random
 import time
-from datetime import datetime
 from pathlib import Path
 
 import gradio as gr
@@ -18,23 +16,6 @@ from .pipeline import VideoAnalyzer
 from .subclass_info import SEVERITY_ORDER, SUBCLASS_DICT
 from .schemas import TimeBasedReport
 from .pipeline import DetectionMedia
-
-REPORTS_DIR = Path(__file__).parent.parent / "outputs" / "reports"
-REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def _save_report(report: TimeBasedReport) -> Path:
-    """Сохраняет JSON-отчёт в outputs/reports/ с временной меткой."""
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    # Берём имя видео из sourceInfo если есть
-    title = getattr(report.sourceInfo, "video_title", None) or "video"
-    # Чистим имя файла от спецсимволов
-    safe_title = "".join(c if c.isalnum() or c in "-_ " else "_" for c in str(title))[:50].strip()
-    filename = f"{ts}_{safe_title}.json"
-    path = REPORTS_DIR / filename
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(report.model_dump(mode="json"), f, ensure_ascii=False, indent=2)
-    return path
 
 
 # ── Фразы по этапам ──────────────────────────────────────────────────────────
@@ -268,7 +249,7 @@ _PLACEHOLDER_HTML = """
     Введите ссылку на YouTube и нажмите «Запустить анализ»
   </div>
   <div style="font-size:.82rem;color:#374151">
-    Поддерживаются видео до 60 минут · 9 категорий нарушений
+    Поддерживаются видео до 60 минут · 12 категорий нарушений
   </div>
 </div>
 """
@@ -343,17 +324,19 @@ def _timeline_html(report: TimeBasedReport) -> str:
     if not report.detections:
         return ""
     dur = report.sourceInfo.video_duration_seconds or 1
-    max_ef = max((d.endFrame for d in report.detections), default=1)
-    fps_approx = max_ef / dur if dur else 30.0
+    # Полоски позиционируем по РЕАЛЬНОЙ длительности ролика в кадрах
+    # (total_frames = duration × fps), а не по последнему событию — иначе
+    # события «растягиваются» на всю шкалу. fps берём из отчёта.
+    fps = report.source_info.fps or (max((d.endFrame for d in report.detections), default=1) / dur)
+    total_frames = max(1.0, dur * fps)
 
     bars = "".join(
         f'<div title="{(e := SUBCLASS_DICT.get(d.subclass.value)) and e.ru_name or d.subclass.value}: '
         f'{d.time_interval} (conf {d.confidence:.2f})" '
-        f'style="position:absolute;left:{d.startFrame / (dur * fps_approx) * 100:.2f}%;'
-        f'width:{max(0.5, (d.endFrame - d.startFrame) / (dur * fps_approx) * 100):.2f}%;'
+        f'style="position:absolute;left:{min(99.0, d.startFrame / total_frames * 100):.2f}%;'
+        f'width:{max(0.5, min(100.0, (d.endFrame - d.startFrame) / total_frames * 100)):.2f}%;'
         f'height:100%;background:{e.color if e else "#888"};opacity:.85;border-radius:3px"></div>'
         for d in report.detections
-        if True
     )
 
     rows = "".join(
@@ -513,12 +496,8 @@ async def analyze_url(
         yield _emit(_error_html(str(exc)[:300]))
         return
 
-    # ── Сохраняем JSON в outputs/reports/ ───────────────────────────────────
-    try:
-        saved_path = _save_report(report)
-        print(f"[UI] Отчёт сохранён: {saved_path}")
-    except Exception as exc:
-        print(f"[UI] Не удалось сохранить отчёт: {exc}")
+    # JSON-отчёт уже сохранён пайплайном в outputs/reports/ (с полями source/
+    # source_dir) — здесь повторно не сохраняем, чтобы не плодить дубли в истории.
 
     # ── Строим галерею ───────────────────────────────────────────────────────
     gallery_items = []
@@ -586,7 +565,7 @@ def build_ui() -> gr.Blocks:
     CV Video Analytics
   </div>
   <div style="color:#4b5563;font-size:.88rem;margin-top:6px">
-    Нейросетевой анализ видео · 9 категорий нарушений
+    Нейросетевой анализ видео · 12 категорий нарушений
   </div>
 </div>""")
 

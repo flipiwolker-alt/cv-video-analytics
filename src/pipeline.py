@@ -173,6 +173,7 @@ class VideoAnalyzer:
         use_llm_vision: bool = False,
         stage_timeout: float = 600.0,
         clips_dir: Optional[Path] = None,
+        min_confidence: float = 0.45,
     ):
         self.dummy = dummy
         self.offline = offline
@@ -187,6 +188,10 @@ class VideoAnalyzer:
         self.use_llm_vision = use_llm_vision
         self.stage_timeout = stage_timeout
         self.clips_dir = clips_dir or Path("outputs/clips")
+        # Порог уверенности: пограничные срабатывания (зашумлённый zero-shot)
+        # ниже этого значения отбрасываются. Без LLM-слоя это главный фильтр
+        # ложных тревог; с включённой Ollama можно ставить ниже.
+        self.min_confidence = min_confidence
 
         # Пул потоков: каждый ML-этап получает свой поток
         # CPU-bound библиотеки (PyTorch, OpenCV, EasyOCR) снимают GIL → реальный параллелизм
@@ -510,10 +515,19 @@ class VideoAnalyzer:
                     break
 
     def _postprocess(self, detections: list[Detection], fps: float = 30.0) -> list[Detection]:
-        """Кросс-модальная фьюзия + temporal NMS по каждому субклассу."""
+        """Кросс-модальная фьюзия + порог уверенности + temporal NMS по субклассу."""
         if not detections:
             return []
+        # Кросс-модальный boost ДО порога — согласие аудио+видео может вытянуть
+        # пограничную детекцию выше min_confidence.
         self._cross_modal_boost(detections, fps)
+        before = len(detections)
+        detections = [d for d in detections if d.confidence >= self.min_confidence]
+        if before != len(detections):
+            log.info("Порог уверенности %.2f: отброшено %d пограничных детекций",
+                     self.min_confidence, before - len(detections))
+        if not detections:
+            return []
         gap_frames = int(2.0 * fps)
         by_class: dict[str, list[Detection]] = {}
         for d in detections:
