@@ -1,7 +1,12 @@
 """Запуск Gradio-интерфейса.
 
-Локально:       python run_ui.py
-Публичный URL:  python run_ui.py --share
+⚠️  Сначала запусти Ollama в отдельном терминале:
+    ollama serve
+
+Затем в этом терминале:
+    python run_ui.py              # Локально на http://localhost:7860
+    python run_ui.py --share      # С публичным URL (72 часа)
+    python run_ui.py --port 8080  # На другом порту
 """
 import argparse
 import sys

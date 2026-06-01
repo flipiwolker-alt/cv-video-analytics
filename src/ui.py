@@ -6,8 +6,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import random
 import time
+from datetime import datetime
 from pathlib import Path
 
 import gradio as gr
@@ -16,6 +18,23 @@ from .pipeline import VideoAnalyzer
 from .subclass_info import SEVERITY_ORDER, SUBCLASS_DICT
 from .schemas import TimeBasedReport
 from .pipeline import DetectionMedia
+
+REPORTS_DIR = Path(__file__).parent.parent / "outputs" / "reports"
+REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _save_report(report: TimeBasedReport) -> Path:
+    """Сохраняет JSON-отчёт в outputs/reports/ с временной меткой."""
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # Берём имя видео из sourceInfo если есть
+    title = getattr(report.sourceInfo, "video_title", None) or "video"
+    # Чистим имя файла от спецсимволов
+    safe_title = "".join(c if c.isalnum() or c in "-_ " else "_" for c in str(title))[:50].strip()
+    filename = f"{ts}_{safe_title}.json"
+    path = REPORTS_DIR / filename
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(report.model_dump(mode="json"), f, ensure_ascii=False, indent=2)
+    return path
 
 
 # ── Фразы по этапам ──────────────────────────────────────────────────────────
@@ -493,6 +512,13 @@ async def analyze_url(
     except Exception as exc:
         yield _emit(_error_html(str(exc)[:300]))
         return
+
+    # ── Сохраняем JSON в outputs/reports/ ───────────────────────────────────
+    try:
+        saved_path = _save_report(report)
+        print(f"[UI] Отчёт сохранён: {saved_path}")
+    except Exception as exc:
+        print(f"[UI] Не удалось сохранить отчёт: {exc}")
 
     # ── Строим галерею ───────────────────────────────────────────────────────
     gallery_items = []
