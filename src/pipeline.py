@@ -34,6 +34,7 @@ from .pz7_nsfw import nsfw_keyframes
 from .pz8_action import xclip_action
 from .presets import get_preset, DEFAULT_PRESET
 from .logs import get_logger, stage
+from .gpu_lock import GpuSlot
 
 from .schemas import (
     Detection,
@@ -220,15 +221,29 @@ class VideoAnalyzer:
             log.info("Видео: %.0fс, %.1f fps, %d кадров", duration_sec, fps, frame_count)
 
             # ── Analysis (параллельно) ────────────────────────────────────
+            # Межпроцессный слот: на 8-ГБ GPU одновременно идёт ТОЛЬКО ОДИН
+            # анализ. Второй (из UI/API/benchmark) ждёт в очереди, а не лезет
+            # в ту же VRAM и не валит оба по таймауту. Скачивание держим вне лока.
             await progress(0.20, "Извлекаю ключевые кадры...")
-            log.info("▶ Параллельный анализ: аудио-ветка + видео-ветка")
-            audio_task = asyncio.create_task(
-                self._analyze_audio(video_path, fps, duration_sec, progress)
-            )
-            video_task = asyncio.create_task(
-                self._analyze_video(video_path, fps, duration_sec, progress)
-            )
-            audio_dets, video_dets = await asyncio.gather(audio_task, video_task)
+            loop = asyncio.get_event_loop()
+            slot = None
+            if not self.dummy and not self.offline:
+                slot = GpuSlot(on_wait=lambda: log.info(
+                    "⏳ Очередь: ждём освобождения GPU (идёт другой анализ)..."))
+                await progress(0.18, "Очередь на GPU (если занят другим анализом)...")
+                await loop.run_in_executor(None, slot.__enter__)
+            try:
+                log.info("▶ Параллельный анализ: аудио-ветка + видео-ветка")
+                audio_task = asyncio.create_task(
+                    self._analyze_audio(video_path, fps, duration_sec, progress)
+                )
+                video_task = asyncio.create_task(
+                    self._analyze_video(video_path, fps, duration_sec, progress)
+                )
+                audio_dets, video_dets = await asyncio.gather(audio_task, video_task)
+            finally:
+                if slot is not None:
+                    await loop.run_in_executor(None, slot.__exit__, None, None, None)
             log.info("Сырых детекций: аудио=%d, видео=%d", len(audio_dets), len(video_dets))
 
             # ── Post-processing ───────────────────────────────────────────
