@@ -48,6 +48,38 @@ ProgressCb = Callable[[float, str], Awaitable[None]]
 
 log = get_logger(__name__)
 
+_warm_lock = threading.Lock()
+_warmed = False
+
+
+def _warm_imports(use_ocr: bool = True) -> None:
+    """Прогрев тяжёлых ленивых импортов ОДИН раз, однопоточно.
+
+    Каналы clip/nsfw/action/ocr иначе одновременно впервые тянут одни и те же
+    тяжёлые подмодули (`transformers.AutoModel`, `torch._dynamo`, `easyocr`) из
+    параллельных потоков. Ни ленивый загрузчик transformers, ни питоновский
+    import-lock на это не рассчитаны → случайный поток ловит
+    `cannot import name 'AutoModel'` или `deadlock detected ... torch._dynamo`.
+    Резолвим их заранее в один поток — дальше потоки берут из кэша модулей.
+    """
+    global _warmed
+    with _warm_lock:
+        if _warmed:
+            return
+        try:
+            import torch  # noqa: F401
+            import torch._dynamo  # noqa: F401  (главный источник дедлока)
+            from transformers import (  # noqa: F401
+                AutoModel, AutoProcessor,
+                AutoModelForImageClassification, AutoImageProcessor,
+                XCLIPModel, XCLIPProcessor, CLIPModel, CLIPProcessor,
+            )
+            if use_ocr:
+                import easyocr  # noqa: F401  (тоже тянет torch-машинерию)
+        except Exception as exc:
+            log.warning("Прогрев импортов не удался: %s", exc)
+        _warmed = True
+
 _SUBCLASS_COLORS = {
     "alcohol":   (245, 158, 11),
     "drugs":     (239, 68, 68),
@@ -362,6 +394,9 @@ class VideoAnalyzer:
 
         await progress(0.33, f"Параллельный анализ: {', '.join(stage_map.keys())}...")
 
+        # Прогрев тяжёлых ленивых импортов до параллельных потоков (см. выше)
+        await loop.run_in_executor(self._pool, lambda: _warm_imports(self.use_ocr))
+
         _names = {"yolo": "объекты (YOLO+World)", "ocr": "текст в кадре (OCR)",
                   "clip": "сцена (SigLIP)", "nsfw": "NSFW (Falconsai)",
                   "action": "действия (X-CLIP)"}
@@ -402,19 +437,26 @@ class VideoAnalyzer:
             await asyncio.sleep(0.5)
             return self._mock_audio_detections(fps, duration)
 
-        # Аудио: Whisper → транскрипт → словарь + (опц.) LLM-классификация
+        # Аудио: Whisper → транскрипт → словарь + (опц.) LLM-классификация.
+        # Ошибка аудио-ветки (нет звуковой дорожки, битый ffmpeg) НЕ должна
+        # валить весь анализ — видео-каналы продолжают работать.
         loop = asyncio.get_event_loop()
         _ts = time.time()
         log.info("▶ [audio] речь: Whisper + классификация — старт")
-        detections = await loop.run_in_executor(
-            None,
-            lambda: _run_pz4(
-                video_path, fps,
-                preset=self.preset,
-                model_size=self.whisper_model,
-                use_llm=self.use_llm,
-            ),
-        )
+
+        def _safe_audio() -> list:
+            try:
+                return _run_pz4(
+                    video_path, fps,
+                    preset=self.preset,
+                    model_size=self.whisper_model,
+                    use_llm=self.use_llm,
+                )
+            except Exception as exc:
+                log.warning("✖ [audio] — ошибка (вероятно нет аудиодорожки): %s", exc)
+                return []
+
+        detections = await loop.run_in_executor(None, _safe_audio)
         log.info("✔ [audio] — %d детекций за %.1fс", len(detections), time.time() - _ts)
         await progress(0.65, f"Аудио: {len(detections)} событий")
         return detections

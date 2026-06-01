@@ -20,6 +20,10 @@ faster-whisper>=1.0.0     # быстрее openai-whisper, int8-квантиза
 # ── Object Detection ──────────────────────────────────────────────────────────
 ultralytics>=8.1.0        # YOLOv8 + YOLO-World (open-vocabulary)
 # ВАЖНО: matplotlib (см. Core CV выше) обязателен — новые ultralytics импортируют его при старте
+# YOLO-World.set_classes() требует CLIP-токенизатор. Ставим заранее, иначе
+# ultralytics на ПЕРВОМ анализе тянет его с GitHub (долгий autoupdate + сеть).
+ftfy>=6.0.0
+clip @ git+https://github.com/ultralytics/CLIP.git
 
 # ── LLM-слой ────────────────────────────────────────────────────────────────────
 # Ollama ставится отдельно (https://ollama.com/download), сетевой клиент — httpx (ниже).
